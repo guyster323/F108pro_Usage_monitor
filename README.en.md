@@ -34,7 +34,7 @@ Discovery (CLI / App) → account picker → Providers → UsageSnapshot
                  ↘ PNG preview (settings app)
 ```
 
-The renderer never talks to hardware. `quotadeck render` works without a keyboard. Uploads rewrite the keyboard LCD SPI flash. Default: write at most every **10 minutes**. See **LCD flash life** below.
+The renderer never talks to hardware. `quotadeck render` works without a keyboard. The settings app picks accounts, language, and timings. Uploads rewrite the keyboard LCD SPI flash. Default: write at most every **10 minutes**. See **LCD flash life** below.
 
 ## Providers
 
@@ -54,7 +54,7 @@ The same Cursor user found in both App and CLI is shown once (App first).
   <img src="docs/assets/crew-grok.png" alt="Grok" width="160">
 </p>
 
-Each account owns the full LCD. Character bay on the left, remaining % / week / reset on the right.
+Each account owns the full LCD. Character bay on the left, remaining-% cards on the right. Cursor shows the same two dashboard bars: **AUTO** (Cursor Models) and **OTHER** (Other Models), not the spend-cents `used/limit` field.
 
 - 50–100 idle · 20–49 busy · 10–19 caution · 1–9 critical · 0 exhausted
 - plus offline / stale / reset
@@ -71,6 +71,7 @@ No Python install required. Download [`dist/QuotaDeck.exe`](dist/QuotaDeck.exe) 
 2. Close official AULA software.
 3. Sign in to the providers you want on this PC (CLI or app).
 4. Run `QuotaDeck.exe`, pick accounts, then **Upload now**.
+5. Switch language with **EN** / **한** in the top-right.
 
 ### From source
 
@@ -81,7 +82,21 @@ python tools\gen_sprites.py
 quotadeck ui
 ```
 
-In the settings app: **Detect** signed-in accounts, check the ones to show, set **scene hold** (default 10s), **Preview** without writing flash, then **Upload now**. Polling defaults to 60s and only refreshes usage on the PC. Keyboard writes default to every 10 minutes. The custom GIF lives in **slot 1**, not the factory slot.
+In the settings app:
+
+- **EN / 한** — switch the UI language. The choice is saved.
+- **Detect** — rescan CLI/app logins on this PC.
+- Checkboxes — only checked accounts rotate on the LCD. The alias is what the HUD shows.
+- **Preview** — remaining % and HUD without writing flash. Preview uses the scene-hold interval.
+- **Upload now** — write the selected accounts to the F108 Pro **user GIF slot**. Buttons lock while the transfer is running.
+
+Default timings are **60 seconds / 10 seconds / 10 minutes**. They are not the same clock.
+
+| Setting | Default | What it does |
+| --- | --- | --- |
+| **Usage poll** | 60 s | How often this PC re-reads APIs. Does not write keyboard flash. |
+| **Scene hold** | 10 s | How long each account card stays on the LCD. |
+| **Keyboard write** | 10 min | Minimum interval before rewriting onboard storage. |
 
 ### CLI
 
