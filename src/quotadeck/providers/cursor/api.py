@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 import httpx
 
 from quotadeck.core.mask import email_local
-from quotadeck.http import get, post
 from quotadeck.core.models import UsageSnapshot, UsageWindow
+from quotadeck.http import get, post
 from quotadeck.providers.cursor.statedb import CursorAuth
 
 USAGE_SUMMARY = "https://cursor.com/api/usage-summary"
 PERIOD_USAGE = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
+_PERCENT_IN_TEXT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 
 
 def _parse_dt(value: object) -> datetime | None:
@@ -30,40 +32,75 @@ def _parse_dt(value: object) -> datetime | None:
         return None
 
 
+def _finite_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in {float("inf"), float("-inf")}:
+        return None
+    return number
+
+
+def _percent_from_message(text: object) -> float | None:
+    if not text:
+        return None
+    match = _PERCENT_IN_TEXT.search(str(text))
+    return _finite_float(match.group(1)) if match else None
+
+
+def _window(used_pct: float, *, window_id: str, label: str, reset: datetime | None) -> UsageWindow:
+    used = max(0.0, float(used_pct))
+    return UsageWindow(
+        id=window_id,
+        label=label,
+        used_percent=used,
+        remaining_percent=max(0.0, 100.0 - used),
+        resets_at=reset,
+    )
+
+
 def parse_usage_summary(data: dict, auth: CursorAuth) -> UsageSnapshot:
+    """Parse the same two bars the Cursor dashboard draws.
+
+    Official UI:
+    - Cursor Models (Auto / Composer / Cursor Grok) ← ``autoPercentUsed``
+    - Other Models ← ``apiPercentUsed``
+
+    ``plan.used / plan.limit`` is included-spend cents and does **not** match
+    those bars (e.g. 17221/40000 ≈ 43% used while the dashboard shows 3% / 16%).
+    """
     individual = data.get("individualUsage") or {}
     plan = individual.get("plan") or {}
-    used = float(plan.get("used") or 0)
-    limit = float(plan.get("limit") or 0)
-    remaining_pct = 100.0
-    used_pct = 0.0
-    if limit > 0:
-        used_pct = (used / limit) * 100.0
-        remaining_pct = max(0.0, 100.0 - used_pct)
     reset = _parse_dt(data.get("billingCycleEnd"))
-    windows = [
-        UsageWindow(
-            id="plan",
-            label="PLAN",
-            used_percent=used_pct,
-            remaining_percent=remaining_pct,
-            resets_at=reset,
-        )
-    ]
+
+    auto_used = _finite_float(plan.get("autoPercentUsed"))
+    api_used = _finite_float(plan.get("apiPercentUsed"))
+    if auto_used is None:
+        auto_used = _percent_from_message(data.get("autoModelSelectedDisplayMessage"))
+    if api_used is None:
+        api_used = _percent_from_message(data.get("namedModelSelectedDisplayMessage"))
+
+    windows: list[UsageWindow] = []
+    if auto_used is not None:
+        windows.append(_window(auto_used, window_id="auto", label="AUTO", reset=reset))
+    if api_used is not None:
+        windows.append(_window(api_used, window_id="api", label="OTHER", reset=reset))
+
+    if not windows:
+        used = _finite_float(plan.get("used")) or 0.0
+        limit = _finite_float(plan.get("limit")) or 0.0
+        if limit > 0:
+            windows.append(_window((used / limit) * 100.0, window_id="plan", label="PLAN", reset=reset))
+
     ondemand = individual.get("onDemand") or {}
-    if ondemand.get("enabled") and float(ondemand.get("limit") or 0) > 0:
-        od_used = float(ondemand.get("used") or 0)
-        od_limit = float(ondemand.get("limit") or 1)
-        od_pct = (od_used / od_limit) * 100.0
-        windows.append(
-            UsageWindow(
-                id="ondemand",
-                label="ON-DEMAND",
-                used_percent=od_pct,
-                remaining_percent=max(0.0, 100.0 - od_pct),
-                resets_at=reset,
-            )
-        )
+    od_limit = _finite_float(ondemand.get("limit")) or 0.0
+    if ondemand.get("enabled") and od_limit > 0:
+        od_used = _finite_float(ondemand.get("used")) or 0.0
+        windows.append(_window((od_used / od_limit) * 100.0, window_id="ondemand", label="ONDEM", reset=reset))
+
     membership = data.get("membershipType") or auth.plan
     local = email_local(auth.email) or "CURSOR"
     return UsageSnapshot(
@@ -80,27 +117,28 @@ def parse_usage_summary(data: dict, auth: CursorAuth) -> UsageSnapshot:
 
 def parse_period_usage(data: dict, auth: CursorAuth) -> UsageSnapshot:
     plan = data.get("planUsage") or {}
-    used = float(plan.get("totalSpend") or plan.get("includedSpend") or 0)
-    limit = float(plan.get("limit") or 0)
-    remaining = float(plan.get("remaining") or 0)
-    if limit <= 0 and remaining:
-        limit = used + remaining
-    used_pct = (used / limit) * 100.0 if limit else 0.0
+    auto_used = _finite_float(plan.get("autoPercentUsed"))
+    api_used = _finite_float(plan.get("apiPercentUsed"))
     reset = _parse_dt(data.get("billingCycleEnd"))
+    windows: list[UsageWindow] = []
+    if auto_used is not None:
+        windows.append(_window(auto_used, window_id="auto", label="AUTO", reset=reset))
+    if api_used is not None:
+        windows.append(_window(api_used, window_id="api", label="OTHER", reset=reset))
+    if not windows:
+        used = float(plan.get("totalSpend") or plan.get("includedSpend") or 0)
+        limit = float(plan.get("limit") or 0)
+        remaining = float(plan.get("remaining") or 0)
+        if limit <= 0 and remaining:
+            limit = used + remaining
+        used_pct = (used / limit) * 100.0 if limit else 0.0
+        windows.append(_window(used_pct, window_id="plan", label="PLAN", reset=reset))
     return UsageSnapshot(
         provider="cursor",
         account_id=auth.user_id,
         display_name=(email_local(auth.email) or "CURSOR").upper(),
         plan=auth.plan,
-        windows=[
-            UsageWindow(
-                id="plan",
-                label="PLAN",
-                used_percent=used_pct,
-                remaining_percent=max(0.0, 100.0 - used_pct),
-                resets_at=reset,
-            )
-        ],
+        windows=windows,
         status="ok",
         fetched_at=datetime.now(timezone.utc),
         source_path=auth.source,

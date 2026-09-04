@@ -37,13 +37,53 @@ def test_grok_zero_percent_omitted() -> None:
     assert snap.windows[0].used_percent == 0.0
 
 
-def test_cursor_plan_from_cents() -> None:
+def test_cursor_uses_dashboard_model_bars() -> None:
     data = json.loads((FIXTURES / "cursor_usage_summary.json").read_text(encoding="utf-8"))
     auth = CursorAuth("tok", "me@example.com", "ultra", "user_1", "db")
     snap = parse_usage_summary(data, auth)
+    assert [w.label for w in snap.windows] == ["AUTO", "OTHER"]
+    assert round(snap.windows[0].used_percent) == 3
+    assert round(snap.windows[0].remaining_percent) == 97
+    assert round(snap.windows[1].used_percent) == 16
+    assert round(snap.windows[1].remaining_percent) == 84
+    assert round(snap.critical_remaining or 0) == 84
+    assert snap.plan == "ultra"
+
+
+def test_cursor_ignores_spend_cents_when_bars_exist() -> None:
+    data = json.loads((FIXTURES / "cursor_usage_summary.json").read_text(encoding="utf-8"))
+    auth = CursorAuth("tok", "me@example.com", "ultra", "user_1", "db")
+    snap = parse_usage_summary(data, auth)
+    cents_remaining = 100.0 - (17221 / 40000) * 100.0
+    assert abs((snap.critical_remaining or 0) - cents_remaining) > 20
+
+
+def test_cursor_falls_back_to_cents_without_percent_fields() -> None:
+    auth = CursorAuth("tok", "me@example.com", "ultra", "user_1", "db")
+    snap = parse_usage_summary(
+        {
+            "membershipType": "ultra",
+            "billingCycleEnd": "2026-09-16T18:13:29.000Z",
+            "individualUsage": {"plan": {"used": 10788, "limit": 40000}},
+        },
+        auth,
+    )
     assert snap.windows[0].label == "PLAN"
     assert round(snap.windows[0].used_percent) == 27
-    assert snap.plan == "ultra"
+
+
+def test_cursor_reads_display_messages_without_plan() -> None:
+    auth = CursorAuth("tok", "me@example.com", "ultra", "user_1", "db")
+    snap = parse_usage_summary(
+        {
+            "membershipType": "ultra",
+            "billingCycleEnd": "2026-09-16T18:13:29.000Z",
+            "autoModelSelectedDisplayMessage": "You've used 3% of your included total usage",
+            "namedModelSelectedDisplayMessage": "You've used 16% of your included API usage",
+        },
+        auth,
+    )
+    assert [round(w.used_percent) for w in snap.windows] == [3, 16]
 
 
 def test_severity_bands() -> None:

@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
+# Consumer SPI NOR is typically rated ~100k program/erase cycles.
+# F108 Pro does not publish the LCD flash rating; treat this as an estimate.
+TYPICAL_SPI_NOR_CYCLES = 100_000
+ACTIVE_HOURS_PER_DAY = 16
+
 
 @dataclass
 class FlashBudget:
@@ -50,6 +55,24 @@ class FlashBudget:
         self.last_upload = now
         self.uploads_today += 1
 
+    def writes_per_hour(self) -> int:
+        return max(1, int(3600 / max(self.min_interval.total_seconds(), 1)))
+
     def estimated_daily_writes(self, poll_seconds: int = 60) -> int:
-        per_hour = max(1, int(3600 / max(self.min_interval.total_seconds(), 1)))
-        return min(self.daily_limit, per_hour * 16)
+        _ = poll_seconds
+        return min(self.daily_limit, self.writes_per_hour() * ACTIVE_HOURS_PER_DAY)
+
+    def estimated_uncapped_daily_writes(self) -> int:
+        return self.writes_per_hour() * ACTIVE_HOURS_PER_DAY
+
+    def estimated_years(
+        self,
+        poll_seconds: int = 60,
+        cycles: int = TYPICAL_SPI_NOR_CYCLES,
+        *,
+        cap: bool = True,
+    ) -> float:
+        daily = self.estimated_daily_writes(poll_seconds) if cap else self.estimated_uncapped_daily_writes()
+        if daily <= 0:
+            return 0.0
+        return cycles / daily / 365.0

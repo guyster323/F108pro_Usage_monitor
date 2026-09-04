@@ -34,7 +34,7 @@ Discovery (CLI / App) → account picker → Providers → UsageSnapshot
                  ↘ PNG preview (settings app)
 ```
 
-The renderer never talks to hardware. `quotadeck render` works without a keyboard. Uploads rewrite SPI flash. Default policy: 10 minute minimum interval, 60 minute max age, 100 writes/day.
+The renderer never talks to hardware. `quotadeck render` works without a keyboard. Uploads rewrite the keyboard LCD SPI flash. Default: write at most every **10 minutes**. See **LCD flash life** below.
 
 ## Providers
 
@@ -63,9 +63,16 @@ Original pixel art only. No official vendor mascots.
 
 ## Getting started (Windows 11)
 
+### Windows exe (recommended)
+
+No Python install required. Download [`dist/QuotaDeck.exe`](dist/QuotaDeck.exe) and double-click it.
+
 1. Connect the F108 Pro over **USB-C** and press `Fn+4`.
 2. Close official AULA software.
 3. Sign in to the providers you want on this PC (CLI or app).
+4. Run `QuotaDeck.exe`, pick accounts, then **Upload now**.
+
+### From source
 
 ```powershell
 py -3.12 -m venv .venv
@@ -86,12 +93,32 @@ quotadeck run --once
 quotadeck ui
 ```
 
+## LCD flash life
+
+Each keyboard upload erases and rewrites the LCD GIF slot on SPI flash. Consumer SPI NOR is typically rated around **100,000** program/erase cycles. AULA does not publish the F108 Pro chip rating, so the numbers below are estimates against that common rating.
+
+The default **minimum upload interval is 10 minutes**. At 16 hours/day that is 6 writes/hour, **about 96 writes/day** (software cap 100/day).
+
+| Minimum interval | Writes / day (16h) | Life at 100k cycles |
+| --- | --- | --- |
+| **10 min (default)** | ~96 | **~2.9 years** |
+| 30 min | ~32 | ~8.6 years |
+| 60 min | ~16 | ~17 years |
+| 1 min | ~960 | ~3.4 months |
+
+The app also caps writes at 100/day. Shorter intervals or repeated **Upload now** clicks still wear the same slot; raising or removing the cap follows the table above.
+
+If the quantized usage snapshot does not change, QuotaDeck skips the upload, so real writes can be lower. The table is the upper bound if every interval writes.
+
+> **Warning: refreshing too often shortens the keyboard's onboard storage life.** Keep the 10-minute default. Repeated **Upload now** clicks also wear the same slot.
+
 ## Rules
 
 - Never copy tokens into the repo or `config.json`.
 - Never upload more than 141 frames. The firmware does not enforce the slot; overflow corrupts menu graphics.
 - Write the user GIF slot (`image_number = 1`). Slot 0 is the factory GIF.
 - USB-C wired mode only (`Fn+4`).
+- Do not write flash faster than needed. The default is 10 minutes. Faster intervals reduce lifespan.
 
 ## More
 

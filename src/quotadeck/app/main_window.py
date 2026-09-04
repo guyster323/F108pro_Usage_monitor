@@ -135,7 +135,11 @@ class AccountRow(QWidget):
             self.remaining.setStyleSheet("color:#F0C440;")
         else:
             self.remaining.setStyleSheet("color:#3DDC97;")
-        extra = snapshot.plan or self.account.source_label
+        extra = " · ".join(
+            f"{w.label} {int(round(w.remaining_percent))}%" for w in snapshot.windows[:2]
+        )
+        if not extra:
+            extra = snapshot.plan or self.account.source_label
         self.meta.setText((extra or "").upper())
 
 
@@ -175,6 +179,8 @@ class MainWindow(QMainWindow):
         self.min_up = QSpinBox()
         self.min_up.setRange(1, 120)
         self.min_up.setValue(self.config.min_upload_minutes)
+        self.min_up.valueChanged.connect(self.update_flash_label)
+        self.poll.valueChanged.connect(self.update_flash_label)
         self.startup = QCheckBox("Windows 시작 시 실행")
         self.startup.setChecked(self.config.launch_at_startup)
         form.addRow("표시 모드", self.mode)
@@ -204,6 +210,8 @@ class MainWindow(QMainWindow):
         self.preview = LcdPreview(3)
         self.status = QLabel("준비됨")
         self.flash = QLabel("")
+        self.flash.setWordWrap(True)
+        self.flash.setStyleSheet("color:#8CB4B0;")
         self.missing = QLabel("")
         self.missing.setWordWrap(True)
         self.missing.setStyleSheet("color:#8CB4B0;")
@@ -346,7 +354,12 @@ class MainWindow(QMainWindow):
 
     def update_flash_label(self) -> None:
         budget = FlashBudget(min_interval=timedelta(minutes=self.min_up.value()))
-        self.flash.setText(f"예상 하루 플래시 기록: 약 {budget.estimated_daily_writes(self.poll.value())}회")
+        daily = budget.estimated_daily_writes(self.poll.value())
+        years = budget.estimated_years(self.poll.value())
+        self.flash.setText(
+            f"예상 하루 플래시 기록: 약 {daily}회 · 10만 회 기준 기대 수명 약 {years:.1f}년. "
+            f"너무 빠르게 하면 키보드 저장공간 수명이 감소합니다."
+        )
 
     def update_keyboard_status(self) -> None:
         interfaces = enumerate_interfaces()

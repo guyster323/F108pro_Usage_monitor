@@ -10,6 +10,13 @@ QuotaDeck never writes provider credential files. Tokens stay with the official 
 | Claude | CLI | `~/.claude/.credentials.json` | `GET api.anthropic.com/api/oauth/usage` |
 | Grok | CLI | `~/.grok/auth.json` | `GET cli-chat-proxy.grok.com/v1/billing?format=credits` |
 
+Cursor HUD windows follow the dashboard bars, not included-spend cents:
+
+- `AUTO` ← `individualUsage.plan.autoPercentUsed` (Cursor Models: Auto / Composer / Cursor Grok)
+- `OTHER` ← `individualUsage.plan.apiPercentUsed` (Other Models)
+
+`plan.used / plan.limit` is a cents bucket and does not match those percentages.
+
 The settings app lists each signed-in source and lets you enable only the accounts that should rotate on the F108 Pro. The same Cursor user found in both App and CLI is shown once (App first).
 
 Claude and Grok were implemented from documented APIs and fixtures. Live verification
