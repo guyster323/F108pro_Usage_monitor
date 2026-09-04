@@ -1,0 +1,45 @@
+{
+  "accounts": [
+    {
+      "provider": "codex",
+      "accountId": "work",
+      "displayName": "WORK",
+      "plan": "Plus",
+      "status": "ok",
+      "windows": [
+        {"id": "session", "label": "5H", "usedPercent": 28, "remainingPercent": 72, "resetAt": "2026-09-04T16:30:00Z"},
+        {"id": "weekly", "label": "WEEK", "usedPercent": 46, "remainingPercent": 54, "resetAt": "2026-09-07T00:00:00Z"}
+      ]
+    },
+    {
+      "provider": "codex",
+      "accountId": "home",
+      "displayName": "HOME",
+      "plan": "Plus",
+      "status": "ok",
+      "windows": [
+        {"id": "session", "label": "5H", "usedPercent": 10, "remainingPercent": 90, "resetAt": "2026-09-04T15:00:00Z"}
+      ]
+    },
+    {
+      "provider": "cursor",
+      "accountId": "ultra",
+      "displayName": "CURSOR",
+      "plan": "ultra",
+      "status": "ok",
+      "windows": [
+        {"id": "plan", "label": "PLAN", "usedPercent": 27, "remainingPercent": 73, "resetAt": "2026-10-01T00:00:00Z"}
+      ]
+    },
+    {
+      "provider": "claude",
+      "accountId": "personal",
+      "displayName": "CLAUDE",
+      "plan": "max",
+      "status": "ok",
+      "windows": [
+        {"id": "session", "label": "5H", "usedPercent": 82, "remainingPercent": 18, "resetAt": "2026-09-04T14:00:00Z"}
+      ]
+    }
+  ]
+}

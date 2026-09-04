@@ -1,0 +1,193 @@
+{
+  "name": "QuotaDeck Crew",
+  "id": "quotadeck-crew",
+  "fps": 4,
+  "canvas": {
+    "width": 240,
+    "height": 135
+  },
+  "hud": "hybrid-v1",
+  "sprite_size": {
+    "w": 72,
+    "h": 72
+  },
+  "palette": {
+    "bg": "#070C14",
+    "text": "#E4F9F6",
+    "accent": "#1EE2B0"
+  },
+  "providers": {
+    "codex": {
+      "accent": "#00F5B4",
+      "states": {
+        "idle": [
+          "idle_00.png",
+          "idle_01.png",
+          "idle_02.png",
+          "idle_03.png"
+        ],
+        "busy": [
+          "busy_00.png",
+          "busy_01.png",
+          "busy_02.png",
+          "busy_03.png"
+        ],
+        "caution": [
+          "caution_00.png",
+          "caution_01.png"
+        ],
+        "critical": [
+          "critical_00.png",
+          "critical_01.png"
+        ],
+        "exhausted": [
+          "exhausted_00.png",
+          "exhausted_01.png"
+        ],
+        "reset": [
+          "reset_00.png",
+          "reset_01.png",
+          "reset_02.png",
+          "reset_03.png"
+        ],
+        "offline": [
+          "offline_00.png",
+          "offline_01.png"
+        ],
+        "stale": [
+          "stale_00.png",
+          "stale_01.png"
+        ]
+      }
+    },
+    "claude": {
+      "accent": "#FF9F5A",
+      "states": {
+        "idle": [
+          "idle_00.png",
+          "idle_01.png",
+          "idle_02.png",
+          "idle_03.png"
+        ],
+        "busy": [
+          "busy_00.png",
+          "busy_01.png",
+          "busy_02.png",
+          "busy_03.png"
+        ],
+        "caution": [
+          "caution_00.png",
+          "caution_01.png"
+        ],
+        "critical": [
+          "critical_00.png",
+          "critical_01.png"
+        ],
+        "exhausted": [
+          "exhausted_00.png",
+          "exhausted_01.png"
+        ],
+        "reset": [
+          "reset_00.png",
+          "reset_01.png",
+          "reset_02.png",
+          "reset_03.png"
+        ],
+        "offline": [
+          "offline_00.png",
+          "offline_01.png"
+        ],
+        "stale": [
+          "stale_00.png",
+          "stale_01.png"
+        ]
+      }
+    },
+    "cursor": {
+      "accent": "#50B4FF",
+      "states": {
+        "idle": [
+          "idle_00.png",
+          "idle_01.png",
+          "idle_02.png",
+          "idle_03.png"
+        ],
+        "busy": [
+          "busy_00.png",
+          "busy_01.png",
+          "busy_02.png",
+          "busy_03.png"
+        ],
+        "caution": [
+          "caution_00.png",
+          "caution_01.png"
+        ],
+        "critical": [
+          "critical_00.png",
+          "critical_01.png"
+        ],
+        "exhausted": [
+          "exhausted_00.png",
+          "exhausted_01.png"
+        ],
+        "reset": [
+          "reset_00.png",
+          "reset_01.png",
+          "reset_02.png",
+          "reset_03.png"
+        ],
+        "offline": [
+          "offline_00.png",
+          "offline_01.png"
+        ],
+        "stale": [
+          "stale_00.png",
+          "stale_01.png"
+        ]
+      }
+    },
+    "grok": {
+      "accent": "#B48CFF",
+      "states": {
+        "idle": [
+          "idle_00.png",
+          "idle_01.png",
+          "idle_02.png",
+          "idle_03.png"
+        ],
+        "busy": [
+          "busy_00.png",
+          "busy_01.png",
+          "busy_02.png",
+          "busy_03.png"
+        ],
+        "caution": [
+          "caution_00.png",
+          "caution_01.png"
+        ],
+        "critical": [
+          "critical_00.png",
+          "critical_01.png"
+        ],
+        "exhausted": [
+          "exhausted_00.png",
+          "exhausted_01.png"
+        ],
+        "reset": [
+          "reset_00.png",
+          "reset_01.png",
+          "reset_02.png",
+          "reset_03.png"
+        ],
+        "offline": [
+          "offline_00.png",
+          "offline_01.png"
+        ],
+        "stale": [
+          "stale_00.png",
+          "stale_01.png"
+        ]
+      }
+    }
+  }
+}
