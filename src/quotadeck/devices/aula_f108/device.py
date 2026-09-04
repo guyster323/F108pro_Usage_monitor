@@ -73,7 +73,10 @@ def wired_mode_ok(interfaces: list[HidInterface] | None = None) -> bool:
 
 def open_transport(prefer: str = "auto") -> Transport:
     errors: list[str] = []
-    order = ["hidapi", "win32"] if prefer == "auto" else [prefer]
+    if prefer == "auto":
+        order = ["win32", "hidapi"] if sys.platform == "win32" else ["hidapi"]
+    else:
+        order = [prefer]
     for name in order:
         try:
             if name == "hidapi":

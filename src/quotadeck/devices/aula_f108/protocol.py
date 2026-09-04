@@ -11,6 +11,7 @@ from quotadeck.devices.aula_f108.constants import (
     CMD_CLOCK_INIT,
     CMD_LCD_HEADER,
     COMMAND_DELAY_S,
+    LCD_IMAGE_NUMBER,
     LCD_PAGE_BYTES,
     REPORT_LEN,
 )
@@ -52,10 +53,12 @@ def upload_payload(transport: Transport, payload: bytes, progress: Progress | No
     send_feature(transport, "begin", pad64(CMD_BEGIN))
     header = bytearray(REPORT_LEN)
     header[0:2] = CMD_LCD_HEADER
-    header[2] = 0x00
+    header[2] = LCD_IMAGE_NUMBER
     header[8] = pages & 0xFF
     header[9] = (pages >> 8) & 0xFF
-    send_feature(transport, "lcd-header", bytes(header))
+    response = send_feature(transport, "lcd-header", bytes(header))
+    if len(response) > 2 and response[2] not in {LCD_IMAGE_NUMBER, 0x01}:
+        raise ProtocolError(f"lcd-header: unexpected image slot {response[2]:02x}")
     for i in range(pages):
         page = payload[i * LCD_PAGE_BYTES : (i + 1) * LCD_PAGE_BYTES]
         transport.write_lcd_page(page)

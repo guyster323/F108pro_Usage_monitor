@@ -19,7 +19,7 @@ Never send LCD pages as SET_REPORT control transfers — that crashes firmware.
 ## LCD upload
 
 1. `04 18` begin (readback)
-2. `04 72` header (readback): `byte[2]=image`, `byte[8..9]=page_count` LE
+2. `04 72` header (readback): `byte[2]=image_number` (**1**, the custom GIF slot), `byte[8..9]=page_count` LE. Slot 0 is the factory GIF and must not be used.
 3. N × 4096-byte Output pages; ACK `01 5A 02 00 …` (300 ms timeout)
 4. `04 02` apply (readback). Device writes SPI flash (~3 s).
 

@@ -73,6 +73,8 @@ class HidapiTransport:
         written = self._lcd.write(bytes([REPORT_ID]) + data)
         if written < 0:
             raise HidapiError("LCD WriteFile failed")
+        if written not in {LCD_PAGE_BYTES, LCD_PAGE_BYTES + 1}:
+            raise HidapiError(f"LCD WriteFile short write ({written} bytes)")
 
     def read_lcd_ack(self, timeout_ms: int = 300) -> bytes:
         timeout = timeout_ms if timeout_ms else int(LCD_ACK_TIMEOUT_S * 1000)

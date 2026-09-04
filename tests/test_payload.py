@@ -69,6 +69,7 @@ def test_mock_upload() -> None:
     upload_payload(transport, payload)
     assert transport.features[0][:2] == b"\x04\x18"
     assert transport.features[1][:2] == b"\x04\x72"
+    assert transport.features[1][2] == 1
     assert transport.features[-1][:2] == b"\x04\x02"
     assert len(transport.pages) == len(payload) // LCD_PAGE_BYTES
     assert transport.closed is False

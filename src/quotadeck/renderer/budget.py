@@ -23,15 +23,17 @@ def allocate(account_count: int, frame_budget: int = LCD_DEFAULT_BUDGET) -> Scen
     group = account_count >= 5
     scenes = account_count if not group else min(account_count, 4)
     leftover = budget - (1 if include_overview else 0)
-    anim = 3
+    anim = 1 if account_count >= 2 else 3
     if scenes * (1 + anim) > leftover:
         anim = 1
     if scenes * (1 + anim) > leftover:
         anim = 0
-    include_transition = leftover - scenes * (1 + anim) - (1 if include_overview else 0) >= scenes
     return SceneBudget(
+        hero_hold_ms=3200,
+        anim_delay_ms=500,
+        overview_hold_ms=2800,
         anim_frames=anim,
         include_overview=include_overview,
-        include_transition=include_transition,
+        include_transition=False,
         group_by_provider=group,
     )
