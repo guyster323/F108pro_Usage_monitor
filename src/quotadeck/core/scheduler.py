@@ -29,6 +29,7 @@ def render_hash(
     *,
     theme: str,
     mode: str,
+    hold_seconds: int = 10,
 ) -> str:
     rows = []
     for snap in snapshots:
@@ -49,7 +50,10 @@ def render_hash(
                 "st": snap.status,
             }
         )
-    payload = json.dumps({"rows": rows, "theme": theme, "mode": mode}, sort_keys=True)
+    payload = json.dumps(
+        {"rows": rows, "theme": theme, "mode": mode, "hold": hold_seconds},
+        sort_keys=True,
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -105,6 +109,7 @@ class QuotaDeckRuntime:
             theme,
             mode=self.config.display_mode,
             frame_budget=self.config.frame_budget,
+            hold_ms=self.config.scene_hold_seconds * 1000,
         )
 
     def maybe_upload(self, snapshots: list[UsageSnapshot], *, force: bool = False) -> str:
@@ -113,6 +118,7 @@ class QuotaDeckRuntime:
             self.state.severity,
             theme=self.config.theme,
             mode=self.config.display_mode.value,
+            hold_seconds=self.config.scene_hold_seconds,
         )
         changed = digest != self.state.last_hash
         aged = self.budget.stale()

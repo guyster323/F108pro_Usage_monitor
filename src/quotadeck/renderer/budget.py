@@ -17,7 +17,12 @@ class SceneBudget:
     group_by_provider: bool = False
 
 
-def allocate(account_count: int, frame_budget: int = LCD_DEFAULT_BUDGET) -> SceneBudget:
+def allocate(
+    account_count: int,
+    frame_budget: int = LCD_DEFAULT_BUDGET,
+    *,
+    hold_ms: int | None = None,
+) -> SceneBudget:
     budget = min(frame_budget, LCD_SOFT_CAP)
     include_overview = account_count >= 3
     group = account_count >= 5
@@ -28,10 +33,11 @@ def allocate(account_count: int, frame_budget: int = LCD_DEFAULT_BUDGET) -> Scen
         anim = 1
     if scenes * (1 + anim) > leftover:
         anim = 0
+    dwell = 3200 if hold_ms is None else max(800, int(hold_ms))
     return SceneBudget(
-        hero_hold_ms=3200,
-        anim_delay_ms=500,
-        overview_hold_ms=2800,
+        hero_hold_ms=dwell,
+        anim_delay_ms=min(500, max(200, dwell // 8)),
+        overview_hold_ms=dwell,
         anim_frames=anim,
         include_overview=include_overview,
         include_transition=False,

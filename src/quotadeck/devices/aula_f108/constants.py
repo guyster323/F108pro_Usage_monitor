@@ -21,6 +21,8 @@ LCD_MAX_FRAMES = 141
 LCD_SOFT_CAP = 48
 LCD_DEFAULT_BUDGET = 32
 LCD_IMAGE_NUMBER = 1
+# Firmware stores delay in 20 ms units, max 255 → 5.1 s per frame.
+LCD_MAX_DELAY_MS = 255 * 20
 
 CMD_BEGIN = bytes([0x04, 0x18])
 CMD_APPLY = bytes([0x04, 0x02])

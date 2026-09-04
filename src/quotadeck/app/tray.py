@@ -47,4 +47,7 @@ def attach_tray(window, runtime) -> QSystemTrayIcon:
     tray.setContextMenu(menu)
     tray.activated.connect(lambda reason: window.show() if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
     tray.show()
+    window.tray_show = show
+    window.tray_upload = upload
+    window.tray_quit = quit_action
     return tray

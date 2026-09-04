@@ -81,7 +81,7 @@ python tools\gen_sprites.py
 quotadeck ui
 ```
 
-In the settings app: **Detect** signed-in accounts, check the ones to show, **Preview** without writing flash, then **Upload now**. The custom GIF lives in **slot 1**, not the factory slot.
+In the settings app: **Detect** signed-in accounts, check the ones to show, set **scene hold** (default 10s), **Preview** without writing flash, then **Upload now**. Polling defaults to 60s and only refreshes usage on the PC. Keyboard writes default to every 10 minutes. The custom GIF lives in **slot 1**, not the factory slot.
 
 ### CLI
 

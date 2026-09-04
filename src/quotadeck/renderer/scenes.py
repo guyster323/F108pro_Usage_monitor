@@ -4,10 +4,22 @@ from pathlib import Path
 
 from quotadeck.core.models import DisplayMode, Severity, UsageSnapshot
 from quotadeck.core.severity import character_state
+from quotadeck.devices.aula_f108.constants import LCD_MAX_DELAY_MS
 from quotadeck.devices.aula_f108.payload import Frame
 from quotadeck.renderer.budget import SceneBudget, allocate
 from quotadeck.renderer.layout import paint_account, paint_empty, paint_overview, paint_transition
 from quotadeck.renderer.sprites import Theme, load_theme
+
+
+def _held(image, delay_ms: int) -> list[Frame]:
+    """Split a long hold so each firmware delay stays within 5.1 s."""
+    remaining = max(200, int(delay_ms))
+    frames: list[Frame] = []
+    while remaining > 0:
+        chunk = min(remaining, LCD_MAX_DELAY_MS)
+        frames.append(Frame(image=image, delay_ms=chunk))
+        remaining -= chunk
+    return frames
 
 
 def render_playlist(
@@ -17,12 +29,13 @@ def render_playlist(
     *,
     mode: DisplayMode = DisplayMode.SMART,
     frame_budget: int = 32,
+    hold_ms: int | None = None,
 ) -> list[Frame]:
     theme_obj = theme if isinstance(theme, Theme) else load_theme(Path(theme))
     if not snapshots:
         return [Frame(image=paint_empty(), delay_ms=2000)]
     ordered = _order(snapshots, severities, mode)
-    budget = allocate(len(snapshots), frame_budget)
+    budget = allocate(len(snapshots), frame_budget, hold_ms=hold_ms)
     if budget.group_by_provider:
         return _render_grouped(snapshots, severities, theme_obj, budget, frame_budget)
     frames: list[Frame] = []
@@ -34,20 +47,20 @@ def render_playlist(
         accent = theme_obj.accent(snapshot.provider)
         hero = paint_account(snapshot, severity, sprites[0], accent)
         if previous is not None and budget.include_transition:
-            frames.append(Frame(image=paint_transition(previous, hero), delay_ms=budget.transition_ms))
-        frames.append(Frame(image=hero, delay_ms=budget.hero_hold_ms))
+            frames.extend(_held(paint_transition(previous, hero), budget.transition_ms))
+        frames.extend(_held(hero, budget.hero_hold_ms))
         for i in range(budget.anim_frames):
             sprite = sprites[(i + 1) % len(sprites)]
-            frames.append(
-                Frame(
-                    image=paint_account(snapshot, severity, sprite, accent),
-                    delay_ms=budget.anim_delay_ms,
+            frames.extend(
+                _held(
+                    paint_account(snapshot, severity, sprite, accent),
+                    budget.anim_delay_ms,
                 )
             )
         previous = hero
     if budget.include_overview and ordered:
         rows = [(item, severities.get(item.key, Severity.STALE)) for item in ordered]
-        frames.append(Frame(image=paint_overview(rows, theme_obj.accent("codex")), delay_ms=budget.overview_hold_ms))
+        frames.extend(_held(paint_overview(rows, theme_obj.accent("codex")), budget.overview_hold_ms))
     return frames[:frame_budget]
 
 
@@ -66,8 +79,13 @@ def _render_grouped(snapshots, severities, theme_obj, budget, frame_budget) -> l
         state = character_state(severities.get(hero.key, Severity.STALE)).value
         sprite = theme_obj.state_images(provider, state)[0]
         accent = theme_obj.accent(provider)
-        frames.append(Frame(image=paint_account(hero, severities.get(hero.key, Severity.STALE), sprite, accent), delay_ms=budget.hero_hold_ms))
-        frames.append(Frame(image=paint_overview(rows, accent), delay_ms=budget.overview_hold_ms))
+        frames.extend(
+            _held(
+                paint_account(hero, severities.get(hero.key, Severity.STALE), sprite, accent),
+                budget.hero_hold_ms,
+            )
+        )
+        frames.extend(_held(paint_overview(rows, accent), budget.overview_hold_ms))
     return frames[:frame_budget]
 
 

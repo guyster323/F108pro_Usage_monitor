@@ -51,7 +51,9 @@ class AppConfig:
     display_mode: DisplayMode = DisplayMode.SMART
     theme: str = "quotadeck-crew"
     poll_seconds: int = 60
+    scene_hold_seconds: int = 10
     min_upload_minutes: int = 10
+    ui_language: str = "ko"
     max_age_minutes: int = 60
     daily_flash_limit: int = 100
     frame_budget: int = 32
@@ -84,6 +86,16 @@ def account_config_from_ref(
     )
 
 
+def _hold_seconds(raw: dict) -> int:
+    if "scene_hold_seconds" not in raw:
+        return 10
+    value = int(raw.get("scene_hold_seconds") or 10)
+    # Previous shipped default was 4s; treat it as unset so the new 10s default applies.
+    if value == 4:
+        return 10
+    return value
+
+
 def _account_from_dict(raw_account: dict) -> AccountConfig:
     allowed = {field.name for field in fields(AccountConfig)}
     return AccountConfig(**{key: value for key, value in raw_account.items() if key in allowed})
@@ -101,11 +113,13 @@ def load_config(path: Path | None = None) -> AppConfig:
         display_mode=mode,
         theme=raw.get("theme", "quotadeck-crew"),
         poll_seconds=int(raw.get("poll_seconds", 60)),
+        scene_hold_seconds=_hold_seconds(raw),
         min_upload_minutes=int(raw.get("min_upload_minutes", 10)),
         max_age_minutes=int(raw.get("max_age_minutes", 60)),
         daily_flash_limit=int(raw.get("daily_flash_limit", 100)),
         frame_budget=int(raw.get("frame_budget", 32)),
         launch_at_startup=bool(raw.get("launch_at_startup", False)),
+        ui_language="en" if raw.get("ui_language") == "en" else "ko",
     )
 
 
