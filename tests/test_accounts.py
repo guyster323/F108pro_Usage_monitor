@@ -56,6 +56,18 @@ def test_select_accounts_empty_when_all_disabled() -> None:
     assert select_accounts(discovered, config) == []
 
 
+def test_config_defaults_are_sixty_ten_ten() -> None:
+    from quotadeck.config import AppConfig, _hold_seconds
+
+    config = AppConfig()
+    assert config.poll_seconds == 60
+    assert config.scene_hold_seconds == 10
+    assert config.min_upload_minutes == 10
+    assert _hold_seconds({}) == 10
+    assert _hold_seconds({"scene_hold_seconds": 4}) == 10
+    assert _hold_seconds({"scene_hold_seconds": 8}) == 8
+
+
 def test_config_ignores_unknown_keys() -> None:
     account = _account_from_dict(
         {

@@ -138,6 +138,21 @@ def test_empty_playlist_renders_idle_card() -> None:
     assert empty.size == (LCD_WIDTH, LCD_HEIGHT)
 
 
+def test_scene_hold_splits_long_delay() -> None:
+    snaps = _snapshots()[:1]
+    sevs = {s.key: snapshot_severity(s) for s in snaps}
+    frames = render_playlist(snaps, sevs, load_theme(THEME), frame_budget=16, hold_ms=8000)
+    holds = [frame.delay_ms for frame in frames]
+    assert sum(holds) >= 8000
+    assert max(holds) <= 5100
+
+
+def test_allocate_uses_requested_hold() -> None:
+    budget = allocate(2, 32, hold_ms=7000)
+    assert budget.hero_hold_ms == 7000
+    assert budget.overview_hold_ms == 7000
+
+
 def test_render_hash_quantizes() -> None:
     snaps = _snapshots()
     sevs = {s.key: snapshot_severity(s) for s in snaps}
