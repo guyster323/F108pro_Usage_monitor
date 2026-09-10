@@ -5,8 +5,7 @@ from pathlib import Path
 from PIL import Image, ImageSequence
 
 from quotadeck.devices.aula_f108.constants import LCD_HEIGHT, LCD_MAX_FRAMES, LCD_WIDTH
-from quotadeck.devices.aula_f108.payload import Frame, PayloadError
-
+from quotadeck.devices.aula_f108.payload import Frame, PayloadError, quantize_delay_ms
 
 def load_gif(path: Path) -> list[Frame]:
     image = Image.open(path)
@@ -23,7 +22,7 @@ def load_gif(path: Path) -> list[Frame]:
             raise PayloadError(
                 f"GIF frame is {fitted.size[0]}x{fitted.size[1]}; expected {LCD_WIDTH}x{LCD_HEIGHT}"
             )
-        frames.append(Frame(image=fitted.copy(), delay_ms=max(20, delay)))
+        frames.append(Frame(image=fitted.copy(), delay_ms=quantize_delay_ms(delay)))
         if len(frames) > LCD_MAX_FRAMES:
             raise PayloadError(f"GIF has more than {LCD_MAX_FRAMES} frames")
     return frames

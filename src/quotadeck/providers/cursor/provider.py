@@ -11,7 +11,6 @@ from quotadeck.providers.cursor.statedb import discover_cursor_auths, load_curso
 
 class CursorProvider(Provider):
     id = "cursor"
-
     def discover(self) -> list[AccountRef]:
         accounts: list[AccountRef] = []
         for auth in discover_cursor_auths():
@@ -29,7 +28,6 @@ class CursorProvider(Provider):
                 )
             )
         return accounts
-
     def fetch(self, account: AccountRef) -> UsageSnapshot:
         auth = load_cursor_auth_for(account)
         if auth is None:

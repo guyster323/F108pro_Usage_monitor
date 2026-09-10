@@ -14,7 +14,6 @@ USAGE_SUMMARY = "https://cursor.com/api/usage-summary"
 PERIOD_USAGE = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
 _PERCENT_IN_TEXT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
 
-
 def _parse_dt(value: object) -> datetime | None:
     if value is None:
         return None
@@ -31,7 +30,6 @@ def _parse_dt(value: object) -> datetime | None:
     except ValueError:
         return None
 
-
 def _finite_float(value: object) -> float | None:
     if value is None or isinstance(value, bool):
         return None
@@ -43,13 +41,11 @@ def _finite_float(value: object) -> float | None:
         return None
     return number
 
-
 def _percent_from_message(text: object) -> float | None:
     if not text:
         return None
     match = _PERCENT_IN_TEXT.search(str(text))
     return _finite_float(match.group(1)) if match else None
-
 
 def _window(used_pct: float, *, window_id: str, label: str, reset: datetime | None) -> UsageWindow:
     used = max(0.0, float(used_pct))
@@ -64,7 +60,6 @@ def _window(used_pct: float, *, window_id: str, label: str, reset: datetime | No
 
 def parse_usage_summary(data: dict, auth: CursorAuth) -> UsageSnapshot:
     """Parse the same two bars the Cursor dashboard draws.
-
     Official UI:
     - Cursor Models (Auto / Composer / Cursor Grok) ← ``autoPercentUsed``
     - Other Models ← ``apiPercentUsed``
@@ -75,32 +70,27 @@ def parse_usage_summary(data: dict, auth: CursorAuth) -> UsageSnapshot:
     individual = data.get("individualUsage") or {}
     plan = individual.get("plan") or {}
     reset = _parse_dt(data.get("billingCycleEnd"))
-
     auto_used = _finite_float(plan.get("autoPercentUsed"))
     api_used = _finite_float(plan.get("apiPercentUsed"))
     if auto_used is None:
         auto_used = _percent_from_message(data.get("autoModelSelectedDisplayMessage"))
     if api_used is None:
         api_used = _percent_from_message(data.get("namedModelSelectedDisplayMessage"))
-
     windows: list[UsageWindow] = []
     if auto_used is not None:
         windows.append(_window(auto_used, window_id="auto", label="AUTO", reset=reset))
     if api_used is not None:
         windows.append(_window(api_used, window_id="api", label="OTHER", reset=reset))
-
     if not windows:
         used = _finite_float(plan.get("used")) or 0.0
         limit = _finite_float(plan.get("limit")) or 0.0
         if limit > 0:
             windows.append(_window((used / limit) * 100.0, window_id="plan", label="PLAN", reset=reset))
-
     ondemand = individual.get("onDemand") or {}
     od_limit = _finite_float(ondemand.get("limit")) or 0.0
     if ondemand.get("enabled") and od_limit > 0:
         od_used = _finite_float(ondemand.get("used")) or 0.0
         windows.append(_window((od_used / od_limit) * 100.0, window_id="ondemand", label="ONDEM", reset=reset))
-
     membership = data.get("membershipType") or auth.plan
     local = email_local(auth.email) or "CURSOR"
     return UsageSnapshot(
@@ -113,7 +103,6 @@ def parse_usage_summary(data: dict, auth: CursorAuth) -> UsageSnapshot:
         fetched_at=datetime.now(timezone.utc),
         source_path=auth.source,
     )
-
 
 def parse_period_usage(data: dict, auth: CursorAuth) -> UsageSnapshot:
     plan = data.get("planUsage") or {}
@@ -144,10 +133,8 @@ def parse_period_usage(data: dict, auth: CursorAuth) -> UsageSnapshot:
         source_path=auth.source,
     )
 
-
 def session_cookie(auth: CursorAuth) -> str:
     return f"WorkosCursorSessionToken={auth.user_id}%3A%3A{auth.access_token}"
-
 
 def fetch_cursor(auth: CursorAuth, timeout: float = 20.0) -> UsageSnapshot:
     headers = {

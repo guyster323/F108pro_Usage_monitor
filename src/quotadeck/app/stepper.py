@@ -8,7 +8,6 @@ class Stepper(QWidget):
     """Number control whose +/- hit targets match the drawn buttons."""
 
     valueChanged = Signal(int)
-
     def __init__(
         self,
         *,
@@ -56,7 +55,6 @@ class Stepper(QWidget):
         row.addWidget(self.display, 1)
         row.addLayout(arrows)
         self._refresh()
-
     def value(self) -> int:
         return self._value
 
@@ -67,7 +65,6 @@ class Stepper(QWidget):
         self._refresh()
         if changed:
             self.valueChanged.emit(self._value)
-
     def setRange(self, minimum: int, maximum: int) -> None:  # noqa: N802
         self._minimum = minimum
         self._maximum = maximum
@@ -82,7 +79,6 @@ class Stepper(QWidget):
 
     def _dec(self) -> None:
         self.setValue(self._value - 1)
-
     def _refresh(self) -> None:
         self.display.setText(f"{self._value}{self._suffix}")
         self.up.setEnabled(self._value < self._maximum)

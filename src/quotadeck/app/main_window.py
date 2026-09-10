@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
 from quotadeck.app.i18n import tr
 from quotadeck.app.preview_widget import LcdPreview
 from quotadeck.app.startup import set_launch_at_startup
@@ -32,7 +31,6 @@ from quotadeck.core.models import DisplayMode, Severity, UsageSnapshot
 from quotadeck.core.scheduler import QuotaDeckRuntime
 from quotadeck.devices.aula_f108.device import aula_software_running, enumerate_interfaces, wired_mode_ok
 from quotadeck.discovery.accounts import discover_accounts
-
 APP_QSS = """
 QMainWindow, QWidget { background: #101418; color: #E8F0F4; font-size: 13px; }
 QLabel { color: #E8F0F4; }
@@ -50,7 +48,6 @@ QPushButton#lang { min-width: 44px; padding: 6px 10px; }
 QListWidget { background: #141A1E; border: 1px solid #2A3238; }
 QCheckBox { color: #E8F0F4; }
 """
-
 
 class Worker(QThread):
     done = Signal(str)
@@ -71,7 +68,6 @@ class Worker(QThread):
 class PreviewWorker(QThread):
     done = Signal(object, object)
     failed = Signal(str)
-
     def __init__(self, runtime: QuotaDeckRuntime) -> None:
         super().__init__()
         self.runtime = runtime
@@ -83,7 +79,6 @@ class PreviewWorker(QThread):
             self.done.emit(snapshots, frames)
         except Exception as exc:
             self.failed.emit(str(exc))
-
 
 class AccountRow(QWidget):
     def __init__(self, account: AccountConfig) -> None:
@@ -110,7 +105,6 @@ class AccountRow(QWidget):
         layout.addWidget(self.alias)
         layout.addWidget(self.remaining)
         layout.addWidget(self.meta, 1)
-
     def to_config(self) -> AccountConfig:
         return AccountConfig(
             provider=self.account.provider,
@@ -121,7 +115,6 @@ class AccountRow(QWidget):
             source_kind=self.account.source_kind,
             source_label=self.account.source_label,
         )
-
     def set_usage(self, snapshot: UsageSnapshot | None) -> None:
         if snapshot is None:
             self.remaining.setText("--%")
@@ -146,7 +139,6 @@ class AccountRow(QWidget):
             extra = snapshot.plan or self.account.source_label
         self.meta.setText((extra or "").upper())
 
-
 class MainWindow(QMainWindow):
     def __init__(self, *, live: bool = True) -> None:
         super().__init__()
@@ -161,7 +153,6 @@ class MainWindow(QMainWindow):
         self.tray_upload = None
         self.tray_quit = None
         self.tray = attach_tray(self, self.runtime) if live else None
-
         root = QWidget()
         layout = QHBoxLayout(root)
         left = QVBoxLayout()
@@ -181,7 +172,6 @@ class MainWindow(QMainWindow):
         self.list = QListWidget()
         self.list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
         left.addWidget(self.list)
-
         form = QFormLayout()
         self.mode = QComboBox()
         self.poll = Stepper(minimum=15, maximum=600, value=self.config.poll_seconds)
@@ -206,7 +196,6 @@ class MainWindow(QMainWindow):
         self.timing_hint.setStyleSheet("color:#8CB4B0;")
         left.addLayout(form)
         left.addWidget(self.timing_hint)
-
         buttons = QHBoxLayout()
         self.detect_btn = QPushButton()
         self.detect_btn.clicked.connect(self.detect)
@@ -222,7 +211,6 @@ class MainWindow(QMainWindow):
         buttons.addWidget(self.apply_btn)
         buttons.addWidget(self.upload_btn)
         left.addLayout(buttons)
-
         right = QVBoxLayout()
         self.preview_title = QLabel()
         self.keyboard = QLabel("")
@@ -241,7 +229,6 @@ class MainWindow(QMainWindow):
         right.addWidget(self.flash)
         right.addWidget(self.missing)
         right.addStretch()
-
         layout.addLayout(left, 3)
         layout.addLayout(right, 2)
         self.setCentralWidget(root)
@@ -255,7 +242,6 @@ class MainWindow(QMainWindow):
 
     def _t(self, key: str, **kwargs: object) -> str:
         return tr(self._lang(), key, **kwargs)
-
     def apply_language(self) -> None:
         current = self.mode.currentData() or self.config.display_mode.value
         self.mode.blockSignals(True)
@@ -296,14 +282,12 @@ class MainWindow(QMainWindow):
         self.update_flash_label()
         self.update_keyboard_status()
         self.update_missing_label()
-
     def toggle_language(self) -> None:
         cfg = self.collect_config()
         cfg.ui_language = "en" if self._lang() == "ko" else "ko"
         self.config = cfg
         save_config(cfg)
         self.apply_language()
-
     def set_busy(self, busy: bool) -> None:
         self._busy = busy
         enabled = not busy
@@ -311,7 +295,6 @@ class MainWindow(QMainWindow):
             button.setEnabled(enabled)
         if self.tray_upload is not None:
             self.tray_upload.setEnabled(enabled)
-
     def reload_accounts(self) -> None:
         self.list.clear()
         self.rows = []
@@ -327,7 +310,6 @@ class MainWindow(QMainWindow):
             self.list.setItemWidget(item, row)
             self.rows.append(row)
         self.update_missing_label()
-
     def collect_config(self) -> AppConfig:
         accounts: list[AccountConfig] = []
         for index in range(self.list.count()):
@@ -352,7 +334,6 @@ class MainWindow(QMainWindow):
             launch_at_startup=self.startup.isChecked(),
             ui_language=self._lang(),
         )
-
     def detect(self) -> None:
         if self._busy:
             return
@@ -372,7 +353,6 @@ class MainWindow(QMainWindow):
         self.reload_accounts()
         self.status.setText(self._t("status_found", count=len(found)))
         self.refresh_preview()
-
     def apply(self) -> None:
         self.config = self.collect_config()
         save_config(self.config)
@@ -380,7 +360,6 @@ class MainWindow(QMainWindow):
         self.runtime = QuotaDeckRuntime(self.config)
         self.update_flash_label()
         self.status.setText(self._t("status_saved"))
-
     def refresh_preview(self) -> None:
         if self._busy:
             return
@@ -391,7 +370,6 @@ class MainWindow(QMainWindow):
         self.preview_worker.done.connect(self._on_preview)
         self.preview_worker.failed.connect(self._on_fail)
         self.preview_worker.start()
-
     def upload_now(self) -> None:
         if self._busy:
             return
@@ -411,7 +389,6 @@ class MainWindow(QMainWindow):
         self.worker.done.connect(self._on_done)
         self.worker.failed.connect(self._on_fail)
         self.worker.start()
-
     def _on_preview(self, snapshots, frames) -> None:
         self.set_busy(False)
         self._apply_snapshots(snapshots)
@@ -427,7 +404,6 @@ class MainWindow(QMainWindow):
                 hold=self.config.scene_hold_seconds,
             )
         )
-
     def _on_done(self, message: str) -> None:
         self.set_busy(False)
         self.status.setText(message)
@@ -443,7 +419,6 @@ class MainWindow(QMainWindow):
             uploaded = self.runtime.budget.last_upload
             if uploaded:
                 self.tray.setToolTip(self._t("tray_last", time=uploaded.astimezone().strftime("%H:%M")))
-
     def _apply_snapshots(self, snapshots: list[UsageSnapshot]) -> None:
         by_key = {item.key: item for item in snapshots}
         for row in self.rows:
@@ -453,13 +428,11 @@ class MainWindow(QMainWindow):
         self.set_busy(False)
         QMessageBox.warning(self, "QuotaDeck", message)
         self.status.setText(message)
-
     def update_flash_label(self) -> None:
         budget = FlashBudget(min_interval=timedelta(minutes=self.min_up.value()))
         daily = budget.estimated_daily_writes(self.poll.value())
         years = budget.estimated_years(self.poll.value())
         self.flash.setText(self._t("flash", daily=daily, years=years))
-
     def update_keyboard_status(self) -> None:
         interfaces = enumerate_interfaces()
         running = aula_software_running()
@@ -473,7 +446,6 @@ class MainWindow(QMainWindow):
         else:
             self.keyboard.setText(self._t("kb_missing"))
             self.keyboard.setStyleSheet("color:#FF783C;")
-
     def update_missing_label(self) -> None:
         present = {item.provider for item in self.config.accounts}
         missing = [name for name in ("codex", "cursor", "claude", "grok") if name not in present]
@@ -493,7 +465,6 @@ class MainWindow(QMainWindow):
                 hints=" · ".join(hints[name] for name in missing),
             )
         )
-
     def close_app(self) -> None:
         QApplication.quit()
 

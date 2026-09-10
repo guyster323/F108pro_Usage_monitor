@@ -8,7 +8,6 @@
   <img alt="License" src="https://img.shields.io/badge/License-MIT-green">
   <img alt="LCD" src="https://img.shields.io/badge/AULA%20F108%20Pro-240%C3%97135-1EE2B0">
 </p>
-
 <p align="center">
   <img src="docs/assets/crew-lineup.png" alt="QuotaDeck crew: Codex, Claude, Cursor, Grok" width="720">
 </p>
@@ -18,13 +17,11 @@
 </p>
 
 ---
-
 # QuotaDeck
 
 QuotaDeck finds AI coding accounts already signed in on this PC (CLI or app), lets you pick which ones to show, and uploads a 240×135 RGB565 playlist to the AULA F108 Pro LCD. Tokens stay with the official CLI or app. Remaining percent is the hero number.
 
 > New here? Follow **Getting started**. Protocol, themes, and security live under [docs/](docs/).
-
 ## Architecture
 
 ```
@@ -35,7 +32,6 @@ Discovery (CLI / App) → account picker → Providers → UsageSnapshot
 ```
 
 The renderer never talks to hardware. `quotadeck render` works without a keyboard. The settings app picks accounts, language, and timings. Uploads rewrite the keyboard LCD SPI flash. Default: write at most every **10 minutes**. See **LCD flash life** below.
-
 ## Providers
 
 | Provider | Source | Credential | Status |
@@ -46,74 +42,73 @@ The renderer never talks to hardware. `quotadeck render` works without a keyboar
 | xAI Grok | CLI | `~/.grok/auth.json` | Community |
 
 The same Cursor user found in both App and CLI is shown once (App first).
-
 <p align="center">
   <img src="docs/assets/crew-codex.png" alt="Codex" width="160">
   <img src="docs/assets/crew-claude.png" alt="Claude" width="160">
   <img src="docs/assets/crew-cursor.png" alt="Cursor" width="160">
   <img src="docs/assets/crew-grok.png" alt="Grok" width="160">
 </p>
-
-Each account owns the full LCD. Character bay on the left, remaining-% cards on the right. Cursor shows the same two dashboard bars: **AUTO** (Cursor Models) and **OTHER** (Other Models), not the spend-cents `used/limit` field.
+Each account owns the full LCD for exactly the same duration. An 88×108 quarter-view character fills the left bay; full-height quota bars fill the right. Only **5H / WEEKLY / AUTO / OTHER** and a large remaining percentage stay inside each bar. Text switches from white over the filled side to black over the depleted side at the live boundary. Cursor prefers **AUTO** and **OTHER**, falling back to a spend-cents `used/limit` **PLAN** bar only when those fields are absent.
 
 - 50–100 idle · 20–49 busy · 10–19 caution · 1–9 critical · 0 exhausted
 - plus offline / stale / reset
 
 Original pixel art only. No official vendor mascots.
-
 ## Getting started (Windows 11)
 
-### Windows exe (recommended)
+### Windows exe
 
-No Python install required. Download [`dist/QuotaDeck.exe`](dist/QuotaDeck.exe) and double-click it.
+A release may provide `QuotaDeck.exe` for use without Python. This UX-refresh
+source handoff intentionally excludes an unverified binary: run from source
+below, or build a fresh exe from `QuotaDeck.spec` after validation on Windows.
+An older upstream exe does not contain these changes.
 
 1. Connect the F108 Pro over **USB-C** and press `Fn+4`.
 2. Close official AULA software.
 3. Sign in to the providers you want on this PC (CLI or app).
 4. Run `QuotaDeck.exe`, pick accounts, then **Upload now**.
 5. Switch language with **EN** / **한** in the top-right.
-
 ### From source
 
 ```powershell
 py -3.12 -m venv .venv
-.\.venv\Scripts\pip install -e ".[dev]"
-python tools\gen_sprites.py
-quotadeck ui
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\.venv\Scripts\python.exe tools\gen_sprites.py
+.\.venv\Scripts\python.exe -m quotadeck ui
 ```
 
 In the settings app:
-
 - **EN / 한** — switch the UI language. The choice is saved.
 - **Detect** — rescan CLI/app logins on this PC.
 - Checkboxes — only checked accounts rotate on the LCD. The alias is what the HUD shows.
-- **Preview** — remaining % and HUD without writing flash. Preview uses the scene-hold interval.
+- **Preview** — remaining % and HUD without writing flash. Every account rotates for the configured time per account.
 - **Upload now** — write the selected accounts to the F108 Pro **user GIF slot**. Buttons lock while the transfer is running.
-
-Default timings are **60 seconds / 10 seconds / 10 minutes**. They are not the same clock.
+Default timings are **60 seconds / 5 seconds / 10 minutes**. They are not the same clock.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | **Usage poll** | 60 s | How often this PC re-reads APIs. Does not write keyboard flash. |
-| **Scene hold** | 10 s | How long each account card stays on the LCD. |
+| **Time per account** | 5 s | Total full-screen time, including character animation. Configurable in the app. |
 | **Keyboard write** | 10 min | Minimum interval before rewriting onboard storage. |
 
+New settings, or settings without the field, default to 5 seconds. Upgrades
+preserve an existing `scene_hold_seconds` value from 2–20 seconds, so change an
+older 4 s/10 s value to 5 s once in the app if that is the cadence you want.
 ### CLI
 
 ```powershell
-quotadeck probe
-quotadeck detect --apply
-quotadeck usage
-quotadeck run --once
-quotadeck ui
+.\.venv\Scripts\python.exe -m quotadeck probe
+.\.venv\Scripts\python.exe -m quotadeck detect --apply
+.\.venv\Scripts\python.exe -m quotadeck usage
+.\.venv\Scripts\python.exe -m quotadeck render --fixture tests\fixtures\usage.json --out preview.gif --hold-seconds 5 --mode fixed
+.\.venv\Scripts\python.exe -m quotadeck run --once
+.\.venv\Scripts\python.exe -m quotadeck ui
 ```
-
 ## LCD flash life
 
 Each keyboard upload erases and rewrites the LCD GIF slot on SPI flash. Consumer SPI NOR is typically rated around **100,000** program/erase cycles. AULA does not publish the F108 Pro chip rating, so the numbers below are estimates against that common rating.
 
-The default **minimum upload interval is 10 minutes**. At 16 hours/day that is 6 writes/hour, **about 96 writes/day** (software cap 100/day).
-
+The default **minimum upload interval is 10 minutes**. At 16 hours/day that is 6 writes/hour, **about 96 writes/day**.
 | Minimum interval | Writes / day (16h) | Life at 100k cycles |
 | --- | --- | --- |
 | **10 min (default)** | ~96 | **~2.9 years** |
@@ -121,12 +116,13 @@ The default **minimum upload interval is 10 minutes**. At 16 hours/day that is 6
 | 60 min | ~16 | ~17 years |
 | 1 min | ~960 | ~3.4 months |
 
-The app also caps writes at 100/day. Shorter intervals or repeated **Upload now** clicks still wear the same slot; raising or removing the cap follows the table above.
-
+The 100-write counter is process-local to one continuously running `quotadeck run`
+process and is not persisted. It is not a safety boundary across restarts or repeated
+settings-app **Upload now** actions; use the interval estimates above and do not repeat
+manual uploads in quick succession.
 If the quantized usage snapshot does not change, QuotaDeck skips the upload, so real writes can be lower. The table is the upper bound if every interval writes.
 
 > **Warning: refreshing too often shortens the keyboard's onboard storage life.** Keep the 10-minute default. Repeated **Upload now** clicks also wear the same slot.
-
 ## Rules
 
 - Never copy tokens into the repo or `config.json`.
@@ -134,9 +130,8 @@ If the quantized usage snapshot does not change, QuotaDeck skips the upload, so 
 - Write the user GIF slot (`image_number = 1`). Slot 0 is the factory GIF.
 - USB-C wired mode only (`Fn+4`).
 - Do not write flash faster than needed. The default is 10 minutes. Faster intervals reduce lifespan.
-
 ## More
 
-[Architecture](docs/ARCHITECTURE.md) · [Providers](docs/PROVIDERS.md) · [Security](docs/SECURITY.md) · [F108 protocol](docs/F108_PROTOCOL.md) · [Themes](docs/THEMES.md)
+[UX refresh and code review](docs/UX_REFRESH_REVIEW.md) · [Architecture](docs/ARCHITECTURE.md) · [Providers](docs/PROVIDERS.md) · [Security](docs/SECURITY.md) · [F108 protocol](docs/F108_PROTOCOL.md) · [Themes](docs/THEMES.md)
 
 MIT. Protocol notes derived from [parsiya/f108-pro](https://github.com/parsiya/f108-pro) (MIT).

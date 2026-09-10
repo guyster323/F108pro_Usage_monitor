@@ -14,7 +14,6 @@ from quotadeck.devices.aula_f108.constants import (
     VID,
 )
 from quotadeck.devices.aula_f108.transport import pad64
-
 GENERIC_READ = 0x80000000
 GENERIC_WRITE = 0x40000000
 FILE_SHARE_READ = 0x00000001
@@ -35,7 +34,6 @@ class GUID(ctypes.Structure):
         ("Data4", ctypes.c_ubyte * 8),
     ]
 
-
 class SP_DEVICE_INTERFACE_DATA(ctypes.Structure):
     _fields_ = [
         ("cbSize", wintypes.DWORD),
@@ -52,7 +50,6 @@ class HIDD_ATTRIBUTES(ctypes.Structure):
         ("ProductID", wintypes.USHORT),
         ("VersionNumber", wintypes.USHORT),
     ]
-
 
 class HIDP_CAPS(ctypes.Structure):
     _fields_ = [
@@ -74,7 +71,6 @@ class HIDP_CAPS(ctypes.Structure):
         ("NumberFeatureDataIndices", wintypes.USHORT),
     ]
 
-
 class Win32Error(RuntimeError):
     pass
 
@@ -84,7 +80,6 @@ def _win_dlls():
     setup = ctypes.WinDLL("setupapi.dll")
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     return hid, setup, kernel
-
 
 def _find_path(usage_page: int) -> str:
     hid, setup, kernel = _win_dlls()
@@ -150,7 +145,6 @@ def _find_path(usage_page: int) -> str:
         setup.SetupDiDestroyDeviceInfoList(devinfo)
     raise Win32Error(f"device not found (VID={VID:04x} PID={PID:04x} usage={usage_page:04x})")
 
-
 def _open(path: str):
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     handle = kernel.CreateFileW(
@@ -166,7 +160,6 @@ def _open(path: str):
         raise Win32Error(f"CreateFileW failed: {ctypes.get_last_error()}")
     return handle
 
-
 class Win32Transport:
     def __init__(self) -> None:
         if sys.platform != "win32":
@@ -175,7 +168,6 @@ class Win32Transport:
         self._hid = ctypes.WinDLL("hid.dll")
         self._feature = _open(_find_path(USAGE_PAGE_CONFIG))
         self._lcd = _open(_find_path(USAGE_PAGE_LCD))
-
     def set_feature(self, data: bytes) -> None:
         buf = (ctypes.c_ubyte * (REPORT_LEN + 1))(0, *pad64(data))
         returned = wt.DWORD(0)
@@ -191,7 +183,6 @@ class Win32Transport:
         )
         if not ok:
             raise Win32Error(f"SET_FEATURE failed: {ctypes.get_last_error()}")
-
     def get_feature(self) -> bytes:
         buf = (ctypes.c_ubyte * (REPORT_LEN + 1))()
         returned = wt.DWORD(0)
@@ -208,7 +199,6 @@ class Win32Transport:
         if not ok:
             raise Win32Error(f"GET_FEATURE failed: {ctypes.get_last_error()}")
         return bytes(buf)[1:]
-
     def write_lcd_page(self, data: bytes) -> None:
         if len(data) != LCD_PAGE_BYTES:
             raise Win32Error("bad page size")
@@ -219,7 +209,6 @@ class Win32Transport:
         )
         if not ok:
             raise Win32Error(f"WriteFile LCD failed: {ctypes.get_last_error()}")
-
     def read_lcd_ack(self, timeout_ms: int = 300) -> bytes:
         _ = timeout_ms
         buf = (ctypes.c_ubyte * (REPORT_LEN + 1))()
@@ -228,7 +217,6 @@ class Win32Transport:
         if not ok:
             raise Win32Error(f"ReadFile LCD ACK failed: {ctypes.get_last_error()}")
         return bytes(buf)[1:]
-
     def close(self) -> None:
         for handle in (self._lcd, self._feature):
             if handle:

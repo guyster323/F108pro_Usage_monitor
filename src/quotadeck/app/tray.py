@@ -5,7 +5,6 @@ from PySide6.QtWidgets import QSystemTrayIcon
 
 from quotadeck.core.models import Severity
 
-
 def severity_icon(severity: Severity | None) -> QIcon:
     color = {
         Severity.HEALTHY: "#3DDC97",
@@ -27,12 +26,10 @@ def severity_icon(severity: Severity | None) -> QIcon:
     painter.end()
     return QIcon(pix)
 
-
 def attach_tray(window, runtime) -> QSystemTrayIcon:
     tray = QSystemTrayIcon(severity_icon(None), window)
     tray.setToolTip("QuotaDeck")
     from PySide6.QtWidgets import QMenu
-
     menu = QMenu()
     show = QAction("QuotaDeck 열기", window)
     show.triggered.connect(window.show)

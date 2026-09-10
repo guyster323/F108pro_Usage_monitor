@@ -17,7 +17,6 @@ def mask_secret(value: str | None, keep: int = 4) -> str:
         return "*" * len(value)
     return f"…{value[-keep:]}"
 
-
 def mask_text(text: str) -> str:
     def _repl(match: re.Match[str]) -> str:
         raw = match.group(0)

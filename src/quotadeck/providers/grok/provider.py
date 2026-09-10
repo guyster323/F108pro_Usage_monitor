@@ -11,7 +11,6 @@ from quotadeck.providers.grok.auth import read_grok_auth
 
 class GrokProvider(Provider):
     id = "grok"
-
     def discover(self) -> list[AccountRef]:
         auth = read_grok_auth()
         if auth is None:
@@ -28,7 +27,6 @@ class GrokProvider(Provider):
                 source_label="Grok CLI",
             )
         ]
-
     def fetch(self, account: AccountRef) -> UsageSnapshot:
         auth = read_grok_auth()
         if auth is None:

@@ -15,7 +15,6 @@ from quotadeck.devices.aula_f108.payload import Frame, build_payload
 from quotadeck.devices.aula_f108.protocol import Progress, sync_clock, upload_payload
 from quotadeck.devices.aula_f108.transport import Transport
 
-
 @dataclass
 class HidInterface:
     usage_page: int
@@ -30,7 +29,6 @@ def aula_software_running() -> list[str]:
         return found
     try:
         import subprocess
-
         raw = subprocess.check_output(
             ["tasklist", "/FO", "CSV", "/NH"],
             text=True,
@@ -43,7 +41,6 @@ def aula_software_running() -> list[str]:
         if name.lower() in lower:
             found.append(name)
     return found
-
 
 def enumerate_interfaces() -> list[HidInterface]:
     results: list[HidInterface] = []
@@ -64,12 +61,10 @@ def enumerate_interfaces() -> list[HidInterface]:
         )
     return results
 
-
 def wired_mode_ok(interfaces: list[HidInterface] | None = None) -> bool:
     ifaces = interfaces if interfaces is not None else enumerate_interfaces()
     pages = {item.usage_page for item in ifaces}
     return USAGE_PAGE_CONFIG in pages and USAGE_PAGE_LCD in pages
-
 
 def open_transport(prefer: str = "auto") -> Transport:
     errors: list[str] = []
@@ -81,7 +76,6 @@ def open_transport(prefer: str = "auto") -> Transport:
         try:
             if name == "hidapi":
                 from quotadeck.devices.aula_f108.transport_hidapi import HidapiTransport
-
                 return HidapiTransport()
             if name == "win32":
                 from quotadeck.devices.aula_f108.transport_win32 import Win32Transport
@@ -95,7 +89,6 @@ def open_transport(prefer: str = "auto") -> Transport:
             errors.append(f"{name}: {exc}")
     raise RuntimeError("could not open F108: " + " | ".join(errors))
 
-
 class F108Device:
     def __init__(self, transport: Transport | None = None, prefer: str = "auto") -> None:
         self.transport = transport or open_transport(prefer)
@@ -104,7 +97,6 @@ class F108Device:
         payload = build_payload(frames)
         upload_payload(self.transport, payload, progress)
         return len(payload)
-
     def upload_payload(self, payload: bytes, progress: Progress | None = None) -> None:
         upload_payload(self.transport, payload, progress)
 

@@ -11,7 +11,6 @@ REPORT_ID = 0x00
 COMMAND_DELAY_S = 0.035
 LCD_ACK_TIMEOUT_S = 0.30
 APPLY_SETTLE_S = 3.0
-
 LCD_WIDTH = 240
 LCD_HEIGHT = 135
 LCD_FRAME_BYTES = LCD_WIDTH * LCD_HEIGHT * 2
@@ -28,5 +27,4 @@ CMD_BEGIN = bytes([0x04, 0x18])
 CMD_APPLY = bytes([0x04, 0x02])
 CMD_LCD_HEADER = bytes([0x04, 0x72])
 CMD_CLOCK_INIT = bytes([0x04, 0x28])
-
 AULA_PROCESS_NAMES = ("DeviceDriver.exe", "AULA F108Pro.exe", "aula_driver.exe")

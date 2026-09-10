@@ -10,7 +10,6 @@ class MockTransport:
         self.pages: list[bytes] = []
         self._last: bytes = bytes(REPORT_LEN)
         self.closed = False
-
     def set_feature(self, data: bytes) -> None:
         packet = pad64(data)
         self.features.append(packet)
@@ -25,7 +24,6 @@ class MockTransport:
         if len(data) != LCD_PAGE_BYTES:
             raise ValueError(f"LCD page must be {LCD_PAGE_BYTES} bytes, got {len(data)}")
         self.pages.append(data)
-
     def read_lcd_ack(self, timeout_ms: int = 300) -> bytes:
         _ = timeout_ms
         ack = bytearray(REPORT_LEN)

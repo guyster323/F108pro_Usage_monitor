@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-
 from quotadeck import __version__
 from quotadeck.config import account_config_from_ref, default_theme_dir, load_config, save_config
 from quotadeck.core.mask import mask_text
@@ -19,10 +19,22 @@ from quotadeck.providers.base import all_providers
 from quotadeck.renderer.encode import write_gif
 from quotadeck.renderer.sprites import validate_theme
 
-
 def _setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+
+def _account_seconds(raw: str) -> float:
+    """Argparse type for an exact, finite firmware-compatible account slot."""
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not math.isfinite(value) or not 2.0 <= value <= 20.0:
+        raise argparse.ArgumentTypeError("must be a finite value from 2 to 20 seconds")
+    ticks = value * 50.0
+    if not math.isclose(ticks, round(ticks), abs_tol=1e-9):
+        raise argparse.ArgumentTypeError("must use 0.02-second (20 ms) increments")
+    return round(ticks) / 50.0
 
 def cmd_probe(_args: argparse.Namespace) -> int:
     running = aula_software_running()
@@ -41,14 +53,12 @@ def cmd_probe(_args: argparse.Namespace) -> int:
     print("LCD interface missing. Use USB-C mode (Fn+4), not Bluetooth/2.4G.")
     return 2
 
-
 def cmd_clock(args: argparse.Namespace) -> int:
     from quotadeck.devices.aula_f108.device import F108Device
 
     if args.mock:
         from quotadeck.devices.aula_f108.transport_mock import MockTransport
         from quotadeck.devices.aula_f108.protocol import sync_clock
-
         when = sync_clock(MockTransport())
         print(f"clock synced (mock) {when.isoformat()}")
         return 0
@@ -57,13 +67,11 @@ def cmd_clock(args: argparse.Namespace) -> int:
     print(f"Synced F108 clock to {when.isoformat()}")
     return 0
 
-
 def cmd_upload(args: argparse.Namespace) -> int:
     from quotadeck.devices.aula_f108.device import F108Device
     from quotadeck.devices.aula_f108.payload import build_payload
     from quotadeck.devices.aula_f108.transport_mock import MockTransport
     from quotadeck.devices.aula_f108.protocol import upload_payload
-
     if args.solid:
         r, g, b = hex_to_rgb(args.solid)
         frames = [solid_frame(r, g, b, delay_ms=1000)]
@@ -78,7 +86,6 @@ def cmd_upload(args: argparse.Namespace) -> int:
 
     def progress(cur: int, total: int, phase: str) -> None:
         print(f"{phase} {cur}/{total}")
-
     if args.mock:
         payload = build_payload(frames)
         upload_payload(MockTransport(), payload, progress)
@@ -91,7 +98,6 @@ def cmd_upload(args: argparse.Namespace) -> int:
         device.upload_frames(frames, progress)
     print(f"uploaded {len(frames)} frames")
     return 0
-
 
 def cmd_usage(_args: argparse.Namespace) -> int:
     print(f"{'PROVIDER':<8} {'SRC':<4} {'ACCOUNT':<16} {'PLAN':<10} {'STATUS':<12} WINDOWS")
@@ -106,7 +112,6 @@ def cmd_usage(_args: argparse.Namespace) -> int:
                 f"{(snap.plan or '-'):<10} {snap.status:<12} {mask_text(windows)}"
             )
     return 0
-
 
 def cmd_detect(args: argparse.Namespace) -> int:
     accounts = discover_accounts()
@@ -129,58 +134,87 @@ def cmd_detect(args: argparse.Namespace) -> int:
         print(f"saved {len(config.accounts)} accounts")
     return 0
 
-
-def cmd_render(args: argparse.Namespace) -> int:
+def _snapshots_from_fixture(path: Path):
     from datetime import timedelta
 
     from quotadeck.core.models import UsageSnapshot, UsageWindow
+
+    import json
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    items = raw if isinstance(raw, list) else raw.get("accounts") or [raw]
+    now = datetime.now(timezone.utc)
+    snapshots: list[UsageSnapshot] = []
+    for item in items:
+        windows = []
+        for win in item.get("windows", []):
+            reset = win.get("resetAt") or win.get("resets_at")
+            resets_at = (
+                datetime.fromisoformat(reset.replace("Z", "+00:00"))
+                if reset
+                else now + timedelta(hours=2)
+            )
+            windows.append(
+                UsageWindow(
+                    id=win.get("id", "session"),
+                    label=win.get("label", "5H"),
+                    used_percent=float(win.get("usedPercent", win.get("used_percent", 0))),
+                    remaining_percent=float(
+                        win.get("remainingPercent", win.get("remaining_percent", 100))
+                    ),
+                    resets_at=resets_at,
+                )
+            )
+        snapshots.append(
+            UsageSnapshot(
+                provider=item.get("provider", "codex"),
+                account_id=item.get("accountId", item.get("account_id", "demo")),
+                display_name=item.get("displayName", item.get("display_name", "DEMO")),
+                plan=item.get("plan"),
+                windows=windows,
+                status=item.get("status", "ok"),
+                fetched_at=now,
+            )
+        )
+    return snapshots
+
+
+def cmd_render(args: argparse.Namespace) -> int:
+    from quotadeck.core.models import DisplayMode
     from quotadeck.core.severity import snapshot_severity
     from quotadeck.renderer.scenes import render_playlist
     from quotadeck.renderer.sprites import load_theme
 
-    snapshots: list[UsageSnapshot] = []
+    config = load_config()
     if args.fixture:
-        import json
-
-        raw = json.loads(Path(args.fixture).read_text(encoding="utf-8"))
-        items = raw if isinstance(raw, list) else raw.get("accounts") or [raw]
-        now = datetime.now(timezone.utc)
-        for item in items:
-            windows = []
-            for win in item.get("windows", []):
-                reset = win.get("resetAt") or win.get("resets_at")
-                resets_at = datetime.fromisoformat(reset.replace("Z", "+00:00")) if reset else now + timedelta(hours=2)
-                windows.append(
-                    UsageWindow(
-                        id=win.get("id", "session"),
-                        label=win.get("label", "5H"),
-                        used_percent=float(win.get("usedPercent", win.get("used_percent", 0))),
-                        remaining_percent=float(win.get("remainingPercent", win.get("remaining_percent", 100))),
-                        resets_at=resets_at,
-                    )
-                )
-            snapshots.append(
-                UsageSnapshot(
-                    provider=item.get("provider", "codex"),
-                    account_id=item.get("accountId", item.get("account_id", "demo")),
-                    display_name=item.get("displayName", item.get("display_name", "DEMO")),
-                    plan=item.get("plan"),
-                    windows=windows,
-                    status=item.get("status", "ok"),
-                    fetched_at=now,
-                )
-            )
+        snapshots = _snapshots_from_fixture(Path(args.fixture))
     else:
-        runtime = QuotaDeckRuntime(load_config(), mock=True)
+        runtime = QuotaDeckRuntime(config, mock=True)
         snapshots = runtime.poll()
     theme = load_theme(Path(args.theme) if args.theme else default_theme_dir())
     severities = {snap.key: snapshot_severity(snap) for snap in snapshots}
-    frames = render_playlist(snapshots, severities, theme, frame_budget=int(args.budget))
+    hold_seconds = (
+        float(args.hold_seconds)
+        if args.hold_seconds is not None
+        else float(config.scene_hold_seconds)
+    )
+    display_mode = (
+        DisplayMode(args.mode)
+        if getattr(args, "mode", None) is not None
+        else config.display_mode
+    )
+    frames = render_playlist(
+        snapshots,
+        severities,
+        theme,
+        mode=display_mode,
+        frame_budget=int(args.budget),
+        hold_ms=int(round(hold_seconds * 1000)),
+    )
     out = Path(args.out)
     write_gif(frames, out)
     print(f"wrote {out} ({len(frames)} frames)")
     return 0
-
 
 def cmd_run(args: argparse.Namespace) -> int:
     _setup_logging()
@@ -202,7 +236,6 @@ def cmd_theme(args: argparse.Namespace) -> int:
     print("theme ok")
     return 0
 
-
 def cmd_ui(_args: argparse.Namespace) -> int:
     from quotadeck.app.main_window import run_app
 
@@ -215,7 +248,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=False)
 
     sub.add_parser("probe").set_defaults(func=cmd_probe)
-
     p_clock = sub.add_parser("clock")
     p_clock.add_argument("--mock", action="store_true")
     p_clock.set_defaults(func=cmd_clock)
@@ -227,7 +259,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_up.set_defaults(func=cmd_upload)
 
     sub.add_parser("usage").set_defaults(func=cmd_usage)
-
     p_det = sub.add_parser("detect")
     p_det.add_argument("--apply", action="store_true")
     p_det.set_defaults(func=cmd_detect)
@@ -237,8 +268,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_ren.add_argument("--out", default="preview.gif")
     p_ren.add_argument("--theme")
     p_ren.add_argument("--budget", default="32")
+    p_ren.add_argument(
+        "--hold-seconds",
+        type=_account_seconds,
+        help="total display time per account (defaults to saved setting)",
+    )
+    p_ren.add_argument(
+        "--mode",
+        choices=("smart", "fixed"),
+        help="account order (defaults to saved setting)",
+    )
     p_ren.set_defaults(func=cmd_render)
-
     p_run = sub.add_parser("run")
     p_run.add_argument("--once", action="store_true")
     p_run.add_argument("--mock", action="store_true")
@@ -251,7 +291,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("ui").set_defaults(func=cmd_ui)
     return parser
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()

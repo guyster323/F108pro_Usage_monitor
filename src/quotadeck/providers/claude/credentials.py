@@ -20,7 +20,6 @@ class ClaudeAuth:
         if self.expires_at is None:
             return False
         return datetime.now(timezone.utc) >= self.expires_at
-
     @property
     def has_profile_scope(self) -> bool:
         return "user:profile" in self.scopes
@@ -30,7 +29,6 @@ def credentials_path() -> Path:
     override = os.environ.get("CLAUDE_SECURESTORAGE_CONFIG_DIR") or os.environ.get("CLAUDE_CONFIG_DIR")
     root = Path(override) if override else Path.home() / ".claude"
     return root / ".credentials.json"
-
 
 def read_claude_auth() -> ClaudeAuth | None:
     path = credentials_path()

@@ -1,4 +1,5 @@
 {
+  "schema_version": 2,
   "name": "QuotaDeck Crew",
   "id": "quotadeck-crew",
   "fps": 4,
@@ -6,31 +7,37 @@
     "width": 240,
     "height": 135
   },
-  "hud": "hybrid-v1",
+  "hud": "full-bars-v2",
   "sprite_size": {
-    "w": 72,
-    "h": 72
+    "w": 88,
+    "h": 108
+  },
+  "anchor": {
+    "x": 44,
+    "y": 103
+  },
+  "asset_pipeline": {
+    "source": "artwork/sprite_sources",
+    "compiler": "tools/gen_sprites.py",
+    "pillow": "12.3.0",
+    "layout": "4x4-state-pairs"
   },
   "palette": {
-    "bg": "#070C14",
-    "text": "#E4F9F6",
-    "accent": "#1EE2B0"
+    "bg": "#081019",
+    "text": "#F7FBF7",
+    "accent": "#19D79C"
   },
   "providers": {
     "codex": {
-      "accent": "#00F5B4",
+      "accent": "#19D79C",
       "states": {
         "idle": [
           "idle_00.png",
-          "idle_01.png",
-          "idle_02.png",
-          "idle_03.png"
+          "idle_01.png"
         ],
         "busy": [
           "busy_00.png",
-          "busy_01.png",
-          "busy_02.png",
-          "busy_03.png"
+          "busy_01.png"
         ],
         "caution": [
           "caution_00.png",
@@ -44,12 +51,6 @@
           "exhausted_00.png",
           "exhausted_01.png"
         ],
-        "reset": [
-          "reset_00.png",
-          "reset_01.png",
-          "reset_02.png",
-          "reset_03.png"
-        ],
         "offline": [
           "offline_00.png",
           "offline_01.png"
@@ -57,23 +58,23 @@
         "stale": [
           "stale_00.png",
           "stale_01.png"
+        ],
+        "reset": [
+          "reset_00.png",
+          "reset_01.png"
         ]
       }
     },
     "claude": {
-      "accent": "#FF9F5A",
+      "accent": "#EF9A5A",
       "states": {
         "idle": [
           "idle_00.png",
-          "idle_01.png",
-          "idle_02.png",
-          "idle_03.png"
+          "idle_01.png"
         ],
         "busy": [
           "busy_00.png",
-          "busy_01.png",
-          "busy_02.png",
-          "busy_03.png"
+          "busy_01.png"
         ],
         "caution": [
           "caution_00.png",
@@ -87,12 +88,6 @@
           "exhausted_00.png",
           "exhausted_01.png"
         ],
-        "reset": [
-          "reset_00.png",
-          "reset_01.png",
-          "reset_02.png",
-          "reset_03.png"
-        ],
         "offline": [
           "offline_00.png",
           "offline_01.png"
@@ -100,23 +95,23 @@
         "stale": [
           "stale_00.png",
           "stale_01.png"
+        ],
+        "reset": [
+          "reset_00.png",
+          "reset_01.png"
         ]
       }
     },
     "cursor": {
-      "accent": "#50B4FF",
+      "accent": "#4AB6F7",
       "states": {
         "idle": [
           "idle_00.png",
-          "idle_01.png",
-          "idle_02.png",
-          "idle_03.png"
+          "idle_01.png"
         ],
         "busy": [
           "busy_00.png",
-          "busy_01.png",
-          "busy_02.png",
-          "busy_03.png"
+          "busy_01.png"
         ],
         "caution": [
           "caution_00.png",
@@ -130,12 +125,6 @@
           "exhausted_00.png",
           "exhausted_01.png"
         ],
-        "reset": [
-          "reset_00.png",
-          "reset_01.png",
-          "reset_02.png",
-          "reset_03.png"
-        ],
         "offline": [
           "offline_00.png",
           "offline_01.png"
@@ -143,23 +132,23 @@
         "stale": [
           "stale_00.png",
           "stale_01.png"
+        ],
+        "reset": [
+          "reset_00.png",
+          "reset_01.png"
         ]
       }
     },
     "grok": {
-      "accent": "#B48CFF",
+      "accent": "#AD82EF",
       "states": {
         "idle": [
           "idle_00.png",
-          "idle_01.png",
-          "idle_02.png",
-          "idle_03.png"
+          "idle_01.png"
         ],
         "busy": [
           "busy_00.png",
-          "busy_01.png",
-          "busy_02.png",
-          "busy_03.png"
+          "busy_01.png"
         ],
         "caution": [
           "caution_00.png",
@@ -173,12 +162,6 @@
           "exhausted_00.png",
           "exhausted_01.png"
         ],
-        "reset": [
-          "reset_00.png",
-          "reset_01.png",
-          "reset_02.png",
-          "reset_03.png"
-        ],
         "offline": [
           "offline_00.png",
           "offline_01.png"
@@ -186,6 +169,10 @@
         "stale": [
           "stale_00.png",
           "stale_01.png"
+        ],
+        "reset": [
+          "reset_00.png",
+          "reset_01.png"
         ]
       }
     }

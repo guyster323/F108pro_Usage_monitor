@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Deterministic generator for Fancy QuotaDeck Crew sprites: Claude, Cursor, Grok.
-
 Matches the high-detail pixel-art bar of Codex CRT-bay robot:
 - Exact 72x72 RGBA canvas per sprite
 - 8-16 color hand-tuned palettes with crisp nearest-neighbor aesthetics
@@ -10,7 +9,6 @@ Matches the high-detail pixel-art bar of Codex CRT-bay robot:
     * Grok: Cosmic astronaut with transparent bubble helmet, star face & lunar rover
 - Expressive state acting across all 8 states (idle, busy, caution, critical, exhausted, reset, offline, stale)
 """
-
 from __future__ import annotations
 
 import math
@@ -18,7 +16,6 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 CREW_DIR = Path(__file__).resolve().parent
-
 # Common utility colors
 C_TRANS = (0, 0, 0, 0)
 C_WHITE = (248, 252, 255, 255)
@@ -37,8 +34,6 @@ STATES = {
     "offline": 2,
     "stale": 2,
 }
-
-
 # ==============================================================================
 # 1. CLAUDE — Warm Paper Researcher (Scholar Owl Automaton)
 # ==============================================================================
@@ -50,7 +45,6 @@ CLAUDE_COPPER_BASE = (156, 90, 48, 255)
 CLAUDE_COPPER_MID = (202, 122, 66, 255)
 CLAUDE_COPPER_HI = (236, 156, 96, 255)
 CLAUDE_COPPER_SHEEN = (255, 198, 150, 255)
-
 BRASS_DARK = (120, 88, 22, 255)
 BRASS_BASE = (188, 142, 42, 255)
 BRASS_HI = (242, 192, 68, 255)
@@ -60,7 +54,6 @@ PARCH_DARK = (168, 145, 112, 255)
 PARCH_BASE = (226, 206, 170, 255)
 PARCH_HI = (248, 238, 214, 255)
 INK_LINE = (96, 68, 46, 255)
-
 
 def _claude_leds(state: str):
     if state in {"caution", "exhausted"}:
@@ -83,11 +76,9 @@ def _claude_leds(state: str):
         (245, 135, 38, 255), (255, 175, 75, 255), (255, 235, 170, 255)
     )
 
-
 def create_claude_sprite(state: str, frame: int) -> Image.Image:
     img = Image.new("RGBA", (72, 72), C_TRANS)
     d = ImageDraw.Draw(img)
-
     # Bob and jitter
     bob_y = 0
     jitter_x = 0
@@ -106,11 +97,9 @@ def create_claude_sprite(state: str, frame: int) -> Image.Image:
         bob_y = 3
     elif state == "stale":
         bob_y = 1
-
     ox = 36 + jitter_x
     oy = 33 + bob_y
     lens_bg, lens_line, led_dark, led_mid, led_glow, led_bright = _claude_leds(state)
-
     # --- 1. Owl Ear Tufts / Horn Scrolls ---
     ear_wilt = 4 if state in {"exhausted", "offline"} else ( -2 if state == "reset" else 0 )
     # Left ear tuft
@@ -118,20 +107,17 @@ def create_claude_sprite(state: str, frame: int) -> Image.Image:
     d.polygon([(ox - 11, oy - 14), (ox - 17, oy - 14), lt_tip], fill=CLAUDE_OUTLINE)
     d.polygon([(ox - 12, oy - 14), (ox - 16, oy - 14), (lt_tip[0] + 1, lt_tip[1] + 1)], fill=CLAUDE_COPPER_MID)
     d.point((lt_tip[0] + 1, lt_tip[1] + 2), fill=BRASS_HI)
-
     # Right ear tuft
     rt_tip = (ox + 19, oy - 24 + ear_wilt)
     d.polygon([(ox + 11, oy - 14), (ox + 17, oy - 14), rt_tip], fill=CLAUDE_OUTLINE)
     d.polygon([(ox + 12, oy - 14), (ox + 16, oy - 14), (rt_tip[0] - 1, rt_tip[1] + 1)], fill=CLAUDE_COPPER_MID)
     d.point((rt_tip[0] - 1, rt_tip[1] + 2), fill=BRASS_HI)
-
     if state == "critical" and frame % 2 == 0:
         d.line([(lt_tip[0] - 4, lt_tip[1] - 3), lt_tip], fill=led_glow)
         d.line([(rt_tip[0] + 4, rt_tip[1] - 3), rt_tip], fill=led_glow)
     elif state == "reset":
         d.point((lt_tip[0] - 2, lt_tip[1] - 3), fill=C_SPARK_GOLD)
         d.point((rt_tip[0] + 2, rt_tip[1] - 3), fill=C_SPARK_GOLD)
-
     # --- 2. Head & Scholar Helm ---
     head_l, head_r, head_t, head_b = ox - 20, ox + 20, oy - 15, oy + 10
     d.rounded_rectangle([head_l, head_t, head_r, head_b], radius=5, fill=CLAUDE_OUTLINE)
@@ -144,7 +130,6 @@ def create_claude_sprite(state: str, frame: int) -> Image.Image:
     d.point((head_r - 3, head_t + 3), fill=BRASS_DARK)
     d.point((head_l + 3, head_b - 3), fill=BRASS_HI)
     d.point((head_r - 3, head_b - 3), fill=BRASS_DARK)
-
     # --- 3. Dual Monocle Spectacles ---
     # Left Monocle
     d.ellipse([ox - 16, oy - 7, ox - 2, oy + 5], fill=CLAUDE_OUTLINE)
@@ -157,7 +142,6 @@ def create_claude_sprite(state: str, frame: int) -> Image.Image:
     # Spectacle bridge
     d.line([(ox - 3, oy - 1), (ox + 3, oy - 1)], fill=CLAUDE_OUTLINE, width=2)
     d.line([(ox - 2, oy - 1), (ox + 2, oy - 1)], fill=BRASS_SHEEN)
-
     # Subtle scanline in lenses
     for sy in range(oy - 3, oy + 2, 2):
         d.line([(ox - 12, sy), (ox - 6, sy)], fill=lens_line)
@@ -166,7 +150,6 @@ def create_claude_sprite(state: str, frame: int) -> Image.Image:
     # Monocle Eye Expressions
     eye_ly, eye_ry = oy - 1, oy - 1
     eye_lx, eye_rx = ox - 9, ox + 9
-
     if state in {"offline", "stale"}:
         # Dim offline horizontal dash
         d.line([(eye_lx - 2, eye_ly), (eye_lx + 2, eye_ly)], fill=led_mid)
@@ -183,7 +166,6 @@ def create_claude_sprite(state: str, frame: int) -> Image.Image:
             d.rectangle([eye_lx - 2 + shift, eye_ly - 2, eye_lx + 1 + shift, eye_ly + 1], fill=led_mid)
             d.rectangle([eye_lx - 1 + shift, eye_ly - 1, eye_lx + shift, eye_ly], fill=led_glow)
             d.point((eye_lx + 1 + shift, eye_ly - 1), fill=C_WHITE)
-
             d.rectangle([eye_rx - 2 + shift, eye_ry - 2, eye_rx + 1 + shift, eye_ry + 1], fill=led_mid)
             d.rectangle([eye_rx - 1 + shift, eye_ry - 1, eye_rx + shift, eye_ry], fill=led_glow)
             d.point((eye_rx + 1 + shift, eye_ry - 1), fill=C_WHITE)
@@ -219,7 +201,6 @@ def create_claude_sprite(state: str, frame: int) -> Image.Image:
         d.line([(eye_lx, eye_ly - 2), (eye_lx + 3, eye_ly + 1)], fill=led_bright, width=2)
         d.line([(eye_rx - 3, eye_ly + 1), (eye_rx, eye_ly - 2)], fill=led_bright, width=2)
         d.line([(eye_rx, eye_ry - 2), (eye_rx + 3, eye_ly + 1)], fill=led_bright, width=2)
-
     # --- 4. Automaton Brass Beak ---
     d.polygon([(ox - 3, oy + 3), (ox + 3, oy + 3), (ox, oy + 8)], fill=CLAUDE_OUTLINE)
     d.polygon([(ox - 2, oy + 3), (ox + 2, oy + 3), (ox, oy + 7)], fill=BRASS_HI)
@@ -229,12 +210,10 @@ def create_claude_sprite(state: str, frame: int) -> Image.Image:
     neck_t = head_b
     d.rectangle([ox - 6, neck_t, ox + 6, neck_t + 2], fill=CLAUDE_OUTLINE)
     d.rectangle([ox - 5, neck_t, ox + 5, neck_t + 1], fill=CLAUDE_SHADOW)
-
     body_l, body_r, body_t, body_b = ox - 15, ox + 15, neck_t + 2, neck_t + 16
     d.rounded_rectangle([body_l, body_t, body_r, body_b], radius=3, fill=CLAUDE_OUTLINE)
     d.rounded_rectangle([body_l + 1, body_t + 1, body_r - 1, body_b - 1], radius=2, fill=CLAUDE_COPPER_BASE)
     d.line([(body_l + 2, body_t + 1), (body_r - 2, body_t + 1)], fill=CLAUDE_COPPER_HI)
-
     # Vellum Parchment Bib / Mantle in center of chest
     parch_l, parch_r = ox - 7, ox + 7
     d.rectangle([parch_l, body_t + 2, parch_r, body_b - 2], fill=PARCH_BASE)
@@ -244,7 +223,6 @@ def create_claude_sprite(state: str, frame: int) -> Image.Image:
     d.line([(parch_l + 2, body_t + 4), (parch_r - 2, body_t + 4)], fill=INK_LINE)
     d.line([(parch_l + 2, body_t + 7), (parch_r - 3, body_t + 7)], fill=INK_LINE)
     d.line([(parch_l + 2, body_t + 10), (parch_r - 2, body_t + 10)], fill=INK_LINE)
-
     # Central Amber Chronometer / Rune Core
     core_y = body_t + 6
     d.ellipse([ox - 3, core_y - 3, ox + 3, core_y + 3], fill=CLAUDE_OUTLINE)
@@ -252,7 +230,6 @@ def create_claude_sprite(state: str, frame: int) -> Image.Image:
     core_rad = 1 if (frame % 2 == 0 or state == "critical") else 0
     d.ellipse([ox - core_rad, core_y - core_rad, ox + core_rad, core_y + core_rad], fill=led_glow)
     d.point((ox, core_y), fill=C_WHITE if frame % 2 == 0 else led_bright)
-
     # --- 6. Articulated Wings & Props (Scroll & Quill) ---
     wing_t = body_t
     if state == "busy":
@@ -269,7 +246,6 @@ def create_claude_sprite(state: str, frame: int) -> Image.Image:
         # Left wing claw holding scroll
         d.line([(body_l, wing_t + 4), (scr_x2, wing_t + 8)], fill=CLAUDE_OUTLINE, width=2)
         d.line([(body_l + 1, wing_t + 4), (scr_x2, wing_t + 7)], fill=CLAUDE_COPPER_HI)
-
         # Right wing holds golden feather quill scribbling
         q_tip_y = body_t + 9 + (frame % 2) * 2
         d.line([(body_r, wing_t + 3), (ox + 20, wing_t - 2), (ox + 10, q_tip_y)], fill=BRASS_HI, width=2)
@@ -302,11 +278,9 @@ def create_claude_sprite(state: str, frame: int) -> Image.Image:
         d.polygon([(body_l, wing_t + 1), (body_l - 5, wing_t + 7), (body_l - 1, wing_t + 13), (body_l + 2, wing_t + 11)], fill=CLAUDE_OUTLINE)
         d.polygon([(body_l + 1, wing_t + 2), (body_l - 4, wing_t + 7), (body_l, wing_t + 12), (body_l + 2, wing_t + 10)], fill=CLAUDE_COPPER_MID)
         d.line([(body_l - 3, wing_t + 7), (body_l + 1, wing_t + 8)], fill=CLAUDE_COPPER_SHEEN)
-
         d.polygon([(body_r, wing_t + 1), (body_r + 5, wing_t + 7), (body_r + 1, wing_t + 13), (body_r - 2, wing_t + 11)], fill=CLAUDE_OUTLINE)
         d.polygon([(body_r - 1, wing_t + 2), (body_r + 4, wing_t + 7), (body_r, wing_t + 12), (body_r - 2, wing_t + 10)], fill=CLAUDE_COPPER_MID)
         d.line([(body_r + 3, wing_t + 7), (body_r - 1, wing_t + 8)], fill=CLAUDE_COPPER_SHEEN)
-
     # --- 7. Automaton Talons & Antique Scroll Perch ---
     base_t = body_b
     # Articulated brass talons
@@ -314,7 +288,6 @@ def create_claude_sprite(state: str, frame: int) -> Image.Image:
     d.line([(ox - 6, base_t), (ox - 6, base_t + 3)], fill=BRASS_HI, width=2)
     d.line([(ox + 6, base_t), (ox + 6, base_t + 3)], fill=BRASS_HI, width=2)
     d.line([(ox + 10, base_t), (ox + 10, base_t + 3)], fill=BRASS_HI, width=2)
-
     # Scroll bar cylinder
     bar_l, bar_r = ox - 18, ox + 18
     bar_t, bar_b = base_t + 3, base_t + 8
@@ -322,7 +295,6 @@ def create_claude_sprite(state: str, frame: int) -> Image.Image:
     d.rectangle([bar_l + 1, bar_t + 1, bar_r - 1, bar_b - 1], fill=BRASS_BASE)
     d.line([(bar_l + 2, bar_t + 1), (bar_r - 2, bar_t + 1)], fill=BRASS_SHEEN)
     d.line([(bar_l + 2, bar_b - 1), (bar_r - 2, bar_b - 1)], fill=BRASS_DARK)
-
     # Knurled scroll-knob endcaps
     d.ellipse([bar_l - 4, bar_t - 1, bar_l, bar_b + 1], fill=CLAUDE_OUTLINE)
     d.ellipse([bar_l - 3, bar_t, bar_l - 1, bar_b], fill=BRASS_HI)
@@ -333,8 +305,6 @@ def create_claude_sprite(state: str, frame: int) -> Image.Image:
     d.point((bar_r + 2, bar_t + 2), fill=BRASS_SHEEN)
 
     return img
-
-
 # ==============================================================================
 # 2. CURSOR — Cool Blue Aero-Navigator (Cyber Hover Drone)
 # ==============================================================================
@@ -346,7 +316,6 @@ CURSOR_BODY_BASE = (46, 80, 128, 255)
 CURSOR_BODY_MID = (68, 118, 180, 255)
 CURSOR_BODY_HI = (98, 164, 235, 255)
 CURSOR_BODY_SHEEN = (165, 220, 255, 255)
-
 CARBON_DARK = (20, 24, 34, 255)
 CARBON_MID = (38, 46, 60, 255)
 CARBON_HI = (64, 76, 96, 255)
@@ -357,7 +326,6 @@ ION_DEEP = (25, 125, 225, 255)
 
 NAV_RED = (255, 65, 80, 255)
 NAV_GREEN = (45, 240, 140, 255)
-
 
 def _cursor_leds(state: str):
     if state in {"caution", "exhausted"}:
@@ -380,11 +348,9 @@ def _cursor_leds(state: str):
         (50, 165, 240, 255), (90, 215, 255, 255), (220, 248, 255, 255)
     )
 
-
 def create_cursor_sprite(state: str, frame: int) -> Image.Image:
     img = Image.new("RGBA", (72, 72), C_TRANS)
     d = ImageDraw.Draw(img)
-
     # Hover dynamics
     bob_y = 0
     jitter_x = 0
@@ -406,11 +372,9 @@ def create_cursor_sprite(state: str, frame: int) -> Image.Image:
         bob_y = 5
     elif state == "stale":
         bob_y = 0
-
     ox = 36 + jitter_x
     oy = 31 + bob_y
     hud_bg, hud_line, led_dark, led_mid, led_glow, led_bright = _cursor_leds(state)
-
     # --- 1. Swept Hover Fins / Stabilizer Canards ---
     fin_tilt = -1 if state == "busy" else ( 2 if state in {"exhausted", "offline"} else (frame % 2) )
     # Left Wing Fin
@@ -420,7 +384,6 @@ def create_cursor_sprite(state: str, frame: int) -> Image.Image:
     d.line([(ox - 14, oy - 3), (ox - 25, oy + 4 + fin_tilt)], fill=CURSOR_BODY_SHEEN)
     # Left port nav beacon (red)
     d.point((ox - 26, oy + 4 + fin_tilt), fill=NAV_RED if state != "offline" else CARBON_DARK)
-
     # Right Wing Fin
     r_fin_pts = [(ox + 14, oy - 4), (ox + 26, oy + 4 + fin_tilt), (ox + 24, oy + 9 + fin_tilt), (ox + 14, oy + 6)]
     d.polygon(r_fin_pts, fill=CURSOR_OUTLINE)
@@ -428,7 +391,6 @@ def create_cursor_sprite(state: str, frame: int) -> Image.Image:
     d.line([(ox + 14, oy - 3), (ox + 25, oy + 4 + fin_tilt)], fill=CURSOR_BODY_SHEEN)
     # Right starboard nav beacon (green)
     d.point((ox + 26, oy + 4 + fin_tilt), fill=NAV_GREEN if state != "offline" else CARBON_DARK)
-
     # --- 2. Aero-Drone Helm & Chevron Fuselage ---
     prow_apex = (ox, oy - 19)
     helm_poly = [
@@ -453,7 +415,6 @@ def create_cursor_sprite(state: str, frame: int) -> Image.Image:
     d.polygon(inner_poly, fill=CURSOR_BODY_BASE)
     d.line([(prow_apex[0], prow_apex[1] + 1), (ox - 8, oy - 11), (ox - 16, oy - 4)], fill=CURSOR_BODY_SHEEN)
     d.line([(ox + 13, oy + 7), (ox - 13, oy + 7)], fill=CURSOR_SHADOW)
-
     # Top apex sensor beacon crystal
     d.point(prow_apex, fill=led_bright if state != "offline" else CARBON_HI)
     d.point((ox, oy - 17), fill=led_glow)
@@ -461,7 +422,6 @@ def create_cursor_sprite(state: str, frame: int) -> Image.Image:
     # Air cooling gills
     d.line([(ox - 5, oy - 11), (ox - 2, oy - 11)], fill=CURSOR_SHADOW)
     d.line([(ox + 2, oy - 11), (ox + 5, oy - 11)], fill=CURSOR_SHADOW)
-
     # --- 3. Panoramic HUD Visor & Targeting Reticle ---
     vis_l, vis_r = ox - 14, ox + 14
     vis_t, vis_b = oy - 6, oy + 5
@@ -470,7 +430,6 @@ def create_cursor_sprite(state: str, frame: int) -> Image.Image:
     for sy in range(vis_t + 1, vis_b, 2):
         d.line([(vis_l, sy), (vis_r, sy)], fill=hud_line)
     d.point((vis_l + 1, vis_t + 1), fill=CURSOR_BODY_SHEEN)
-
     # HUD Navigation & Reticle Acting
     cx, cy = ox, oy - 1
     if state in {"offline", "stale"}:
@@ -521,14 +480,12 @@ def create_cursor_sprite(state: str, frame: int) -> Image.Image:
         rad = (frame % 4) + 2
         d.ellipse([cx - rad, cy - rad, cx + rad, cy + rad], outline=led_bright)
         d.point((cx, cy), fill=C_WHITE)
-
     # --- 4. Lower Fuselage & Ion Reactor Core ---
     fus_l, fus_r = ox - 11, ox + 11
     fus_t, fus_b = oy + 8, oy + 18
     d.rounded_rectangle([fus_l, fus_t, fus_r, fus_b], radius=3, fill=CURSOR_OUTLINE)
     d.rounded_rectangle([fus_l + 1, fus_t + 1, fus_r - 1, fus_b - 1], radius=2, fill=CURSOR_BODY_BASE)
     d.line([(fus_l + 2, fus_t + 1), (fus_r - 2, fus_t + 1)], fill=CURSOR_BODY_HI)
-
     # Gyroscopic ion reactor sphere
     core_cy = oy + 13
     d.ellipse([ox - 4, core_cy - 4, ox + 4, core_cy + 4], fill=CURSOR_OUTLINE)
@@ -536,7 +493,6 @@ def create_cursor_sprite(state: str, frame: int) -> Image.Image:
     core_rad = 2 if (frame % 2 == 0 or state == "critical") else 1
     d.ellipse([ox - core_rad, core_cy - core_rad, ox + core_rad, core_cy + core_rad], fill=led_glow)
     d.point((ox, core_cy), fill=C_WHITE if frame % 2 == 0 else led_bright)
-
     # --- 5. Dual Ion Thrusters & Levitation Plasma Exhaust ---
     noz_y1, noz_y2 = fus_b, fus_b + 4
     # Dual thruster nozzles
@@ -544,7 +500,6 @@ def create_cursor_sprite(state: str, frame: int) -> Image.Image:
     d.rectangle([ox + 3, noz_y1, ox + 8, noz_y2], fill=CARBON_DARK)
     d.line([(ox - 7, noz_y2), (ox - 4, noz_y2)], fill=CARBON_HI)
     d.line([(ox + 4, noz_y2), (ox + 7, noz_y2)], fill=CARBON_HI)
-
     # Exhaust Flames / Levitation Rings
     flame_top = noz_y2 + 1
     if state == "offline":
@@ -586,10 +541,7 @@ def create_cursor_sprite(state: str, frame: int) -> Image.Image:
         d.point((ox + 5, flame_top + 1), fill=ION_CORE)
         # Levitation plasma ripple ring
         d.line([(ox - 9, flame_top + f_len + 2), (ox + 9, flame_top + f_len + 2)], fill=led_glow)
-
     return img
-
-
 # ==============================================================================
 # 3. GROK — Violet Star Explorer (Cosmic Rover Astronaut)
 # ==============================================================================
@@ -601,7 +553,6 @@ GROK_ROVER_BASE = (94, 58, 142, 255)
 GROK_ROVER_MID = (135, 88, 195, 255)
 GROK_ROVER_HI = (175, 126, 235, 255)
 GROK_ROVER_SHEEN = (220, 185, 255, 255)
-
 GOLD_FOIL_DARK = (160, 120, 20, 255)
 GOLD_FOIL_BASE = (225, 175, 35, 255)
 GOLD_FOIL_HI = (255, 218, 75, 255)
@@ -616,7 +567,6 @@ STAR_WHITE = (255, 255, 255, 255)
 TIRE_RUBBER = (28, 24, 36, 255)
 TIRE_TREAD = (44, 38, 56, 255)
 RIM_METAL = (150, 135, 175, 255)
-
 
 def _grok_leds(state: str):
     if state in {"caution", "exhausted"}:
@@ -639,11 +589,9 @@ def _grok_leds(state: str):
         (170, 105, 240, 255), (205, 155, 255, 255), (245, 225, 255, 255)
     )
 
-
 def create_grok_sprite(state: str, frame: int) -> Image.Image:
     img = Image.new("RGBA", (72, 72), C_TRANS)
     d = ImageDraw.Draw(img)
-
     # Suspension dynamics
     bob_y = 0
     jitter_x = 0
@@ -662,11 +610,9 @@ def create_grok_sprite(state: str, frame: int) -> Image.Image:
         bob_y = 3
     elif state == "stale":
         bob_y = 1
-
     ox = 36 + jitter_x
     oy = 32 + bob_y
     neb_bg, neb_line, led_dark, led_mid, led_glow, led_bright = _grok_leds(state)
-
     # --- 1. Parabolic Satellite Communications Dish (Top Right) ---
     dish_pivot = (ox + 13, oy - 14)
     if state == "reset":
@@ -695,7 +641,6 @@ def create_grok_sprite(state: str, frame: int) -> Image.Image:
         elif state == "critical":
             d.line([(dish_center[0] + 4, dish_center[1] - 4), (dish_center[0] + 9, dish_center[1] - 7)], fill=led_glow)
             d.line([(dish_center[0] + 2, dish_center[1] + 4), (dish_center[0] + 8, dish_center[1] + 6)], fill=led_glow)
-
     # --- 2. Bubble Helmet Dome ---
     dome_l, dome_r = ox - 20, ox + 20
     dome_t, dome_b = oy - 17, oy + 11
@@ -709,7 +654,6 @@ def create_grok_sprite(state: str, frame: int) -> Image.Image:
         d.point((ox - 13, oy - 10), fill=led_mid)
         d.point((ox + 11, oy - 9), fill=led_mid)
         d.point((ox - 1, oy - 12), fill=C_WHITE)
-
     # Glass reflection sheen on upper-left quadrant
     d.arc([dome_l + 3, dome_t + 2, ox, oy - 2], start=170, end=270, fill=DOME_GLASS_SHEEN, width=2)
     d.point((dome_l + 6, dome_t + 4), fill=STAR_WHITE)
@@ -717,14 +661,12 @@ def create_grok_sprite(state: str, frame: int) -> Image.Image:
     # --- 3. Visor Face: Star-Eyes & Celestial Expressions ---
     eye_y = oy - 2
     lx, rx = ox - 8, ox + 6
-
     def _draw_star_eye(cx: int, cy: int, col_center, col_arms):
         d.point((cx, cy), fill=col_center)
         d.point((cx - 1, cy), fill=col_arms)
         d.point((cx + 1, cy), fill=col_arms)
         d.point((cx, cy - 1), fill=col_arms)
         d.point((cx, cy + 1), fill=col_arms)
-
     if state in {"offline", "stale"}:
         # Dim dormant star points
         d.point((lx, eye_y), fill=led_mid)
@@ -783,25 +725,21 @@ def create_grok_sprite(state: str, frame: int) -> Image.Image:
         d.point((ox - 4, eye_y - 6), fill=C_SPARK_GOLD)
         d.point((ox + 4, eye_y - 6), fill=C_SPARK_GOLD)
         d.line([(ox - 3, eye_y + 6), (ox + 3, eye_y + 6)], fill=led_bright)
-
     # --- 4. Neck Collar & Lunar Rover Chassis ---
     neck_t = dome_b - 2
     d.rectangle([ox - 10, neck_t, ox + 10, neck_t + 3], fill=GROK_OUTLINE)
     d.rectangle([ox - 9, neck_t + 1, ox + 9, neck_t + 2], fill=GROK_ROVER_DARK)
     d.point((ox - 7, neck_t + 1), fill=GOLD_FOIL_HI)
     d.point((ox + 7, neck_t + 1), fill=GOLD_FOIL_HI)
-
     body_l, body_r, body_t, body_b = ox - 14, ox + 14, neck_t + 3, neck_t + 15
     d.rounded_rectangle([body_l, body_t, body_r, body_b], radius=3, fill=GROK_OUTLINE)
     d.rounded_rectangle([body_l + 1, body_t + 1, body_r - 1, body_b - 1], radius=2, fill=GROK_ROVER_BASE)
     d.line([(body_l + 2, body_t + 1), (body_r - 2, body_t + 1)], fill=GROK_ROVER_HI)
-
     # Gold foil thermal insulation patches on corners
     d.rectangle([body_l + 2, body_t + 2, body_l + 4, body_b - 2], fill=GOLD_FOIL_BASE)
     d.rectangle([body_r - 4, body_t + 2, body_r - 2, body_b - 2], fill=GOLD_FOIL_BASE)
     d.point((body_l + 3, body_t + 2), fill=GOLD_FOIL_HI)
     d.point((body_r - 3, body_t + 2), fill=GOLD_FOIL_HI)
-
     # Central Cosmic Pulsar Battery Core
     core_cy = body_t + 6
     d.ellipse([ox - 4, core_cy - 4, ox + 4, core_cy + 4], fill=GROK_OUTLINE)
@@ -809,7 +747,6 @@ def create_grok_sprite(state: str, frame: int) -> Image.Image:
     core_rad = 2 if (frame % 2 == 0 or state == "critical") else 1
     d.ellipse([ox - core_rad, core_cy - core_rad, ox + core_rad, core_cy + core_rad], fill=led_glow)
     d.point((ox, core_cy), fill=C_WHITE if frame % 2 == 0 else led_bright)
-
     # --- 5. All-Terrain Lunar Rover Wheels ---
     whl_y1, whl_y2 = body_b - 3, body_b + 10
     left_whl = [ox - 17, whl_y1, ox - 7, whl_y2]
@@ -817,7 +754,6 @@ def create_grok_sprite(state: str, frame: int) -> Image.Image:
 
     # Wheel tread pattern rotation
     tread_shift = (frame % 3) * 2 if state == "busy" else 0
-
     for w_box in (left_whl, right_whl):
         d.rounded_rectangle(w_box, radius=4, fill=GROK_OUTLINE)
         d.rounded_rectangle([w_box[0] + 1, w_box[1] + 1, w_box[2] - 1, w_box[3] - 1], radius=3, fill=TIRE_RUBBER)
@@ -830,7 +766,6 @@ def create_grok_sprite(state: str, frame: int) -> Image.Image:
         hy = (w_box[1] + w_box[3]) // 2
         d.ellipse([hx - 2, hy - 2, hx + 2, hy + 2], fill=RIM_METAL)
         d.point((hx, hy), fill=GOLD_FOIL_HI)
-
     # Busy state: tire kicking up cosmic dust particles behind wheels
     if state == "busy":
         d.point((left_whl[0] - 2, whl_y2 - 1), fill=led_glow)
@@ -847,7 +782,6 @@ DRAWERS = {
     "grok": create_grok_sprite,
 }
 
-
 def generate_all():
     print("Generating Fancy QuotaDeck crew sprites for claude, cursor, grok...")
     total_generated = 0
@@ -856,7 +790,6 @@ def generate_all():
         prov_dir = CREW_DIR / provider
         prov_dir.mkdir(parents=True, exist_ok=True)
         print(f"\nProcessing provider: {provider}")
-
         for state, count in STATES.items():
             for f in range(count):
                 img = drawer(state, f)
@@ -865,7 +798,6 @@ def generate_all():
                 img.save(out_path)
                 total_generated += 1
             print(f"  - {state:10s} ({count} frames)")
-
     print(f"\nTotal sprites generated: {total_generated} across 3 providers.")
     create_preview_contact_sheet()
 
@@ -875,12 +807,10 @@ def create_preview_contact_sheet():
     bg_color = (7, 12, 20, 255)  # #070C14
     sheet = Image.new("RGBA", (240, 135), bg_color)
     d = ImageDraw.Draw(sheet)
-
     # Outer subtle cyberdeck bezel
     d.rectangle([1, 1, 238, 133], outline=(20, 34, 52, 255))
     d.line([(1, 22), (238, 22)], fill=(24, 42, 64, 255))
     d.line([(1, 106), (238, 106)], fill=(24, 42, 64, 255))
-
     # Place 3 providers side-by-side in idle_00 pose
     # Widths: 6 + 72 + 6 + 72 + 6 + 72 + 6 = 240
     placements = [
@@ -888,7 +818,6 @@ def create_preview_contact_sheet():
         ("cursor", 84, (80, 180, 255, 255), "CURSOR", "AERO DRONE"),
         ("grok", 162, (180, 140, 255, 255), "GROK", "STAR ROVER"),
     ]
-
     for prov, x, acc_col, title, subtitle in placements:
         # Header title
         d.text((x + 12, 6), title, fill=acc_col)
@@ -902,7 +831,6 @@ def create_preview_contact_sheet():
 
         # Footer subtitle
         d.text((x + 2, 114), subtitle, fill=(160, 185, 210, 255))
-
     preview_path = CREW_DIR / "preview_strip.png"
     sheet.save(preview_path)
     print(f"Wrote preview contact sheet to {preview_path} ({sheet.size[0]}x{sheet.size[1]})")

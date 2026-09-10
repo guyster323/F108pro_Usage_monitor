@@ -15,7 +15,6 @@ from quotadeck.providers.codex.auth import CodexAuth
 class CodexRPCError(RuntimeError):
     pass
 
-
 def _read_line(proc: subprocess.Popen[str], timeout: float) -> dict | None:
     if proc.stdout is None:
         return None
@@ -29,7 +28,6 @@ def _read_line(proc: subprocess.Popen[str], timeout: float) -> dict | None:
         return json.loads(line)
     except json.JSONDecodeError:
         return _read_line(proc, timeout)
-
 
 def _rpc(proc: subprocess.Popen[str], payload: dict, timeout: float) -> dict:
     assert proc.stdin is not None
@@ -45,7 +43,6 @@ def _rpc(proc: subprocess.Popen[str], payload: dict, timeout: float) -> dict:
                 raise CodexRPCError(str(message["error"]))
             return message.get("result") or {}
     raise CodexRPCError("RPC timeout")
-
 
 def fetch_app_server(auth: CodexAuth) -> UsageSnapshot:
     exe = find_executable("codex")
@@ -95,7 +92,6 @@ def fetch_app_server(auth: CodexAuth) -> UsageSnapshot:
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             proc.kill()
-
     rate = limits.get("rateLimits") or limits.get("rate_limits") or limits
     windows: list[UsageWindow] = []
     for key, window_id, label in (

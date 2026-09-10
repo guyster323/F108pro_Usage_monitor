@@ -20,7 +20,6 @@ class CursorAuth:
     source_kind: str = "app"
     source_label: str = "Cursor App"
 
-
 def _strip_quotes(value: str | None) -> str | None:
     if value is None:
         return None
@@ -36,12 +35,10 @@ def cli_auth_path() -> Path:
     appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
     return Path(appdata) / "Cursor" / "auth.json"
 
-
 def _user_id(token: str) -> str:
     payload = decode_payload(token)
     sub = str(payload.get("sub") or "")
     return sub.split("|")[-1] if sub else "unknown"
-
 
 def read_ide_auth() -> CursorAuth | None:
     db_path = ide_db_path()
@@ -55,7 +52,6 @@ def read_ide_auth() -> CursorAuth | None:
         conn = sqlite3.connect(f"file:{tmp_path.as_posix()}?mode=ro", uri=True)
         try:
             cur = conn.cursor()
-
             def get(key: str) -> str | None:
                 row = cur.execute("SELECT value FROM ItemTable WHERE key = ?", (key,)).fetchone()
                 if not row or row[0] is None:
@@ -64,7 +60,6 @@ def read_ide_auth() -> CursorAuth | None:
                 if isinstance(value, bytes):
                     value = value.decode("utf-8", "replace")
                 return _strip_quotes(str(value))
-
             token = get("cursorAuth/accessToken")
             if not token:
                 return None
@@ -88,7 +83,6 @@ def read_ide_auth() -> CursorAuth | None:
             except OSError:
                 pass
 
-
 def read_cli_auth() -> CursorAuth | None:
     path = cli_auth_path()
     if not path.is_file():
@@ -110,7 +104,6 @@ def read_cli_auth() -> CursorAuth | None:
         source_label="Cursor CLI",
     )
 
-
 def discover_cursor_auths() -> list[CursorAuth]:
     found: list[CursorAuth] = []
     seen: set[str] = set()
@@ -125,7 +118,6 @@ def discover_cursor_auths() -> list[CursorAuth]:
 def load_cursor_auth() -> CursorAuth | None:
     auths = discover_cursor_auths()
     return auths[0] if auths else None
-
 
 def load_cursor_auth_for(account: object) -> CursorAuth | None:
     source_path = str(getattr(account, "source_path", "") or "")

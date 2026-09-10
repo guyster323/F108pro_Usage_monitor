@@ -12,7 +12,6 @@ from quotadeck.providers.grok.auth import GrokAuth
 BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 SETTINGS_URL = "https://cli-chat-proxy.grok.com/v1/settings"
 
-
 def parse_billing(data: dict, auth: GrokAuth, plan: str | None = None) -> UsageSnapshot:
     config = data.get("config") or data
     period = config.get("currentPeriod") or {}
@@ -49,7 +48,6 @@ def parse_billing(data: dict, auth: GrokAuth, plan: str | None = None) -> UsageS
         fetched_at=datetime.now(timezone.utc),
         source_path=str(auth.path),
     )
-
 
 def fetch_grok(auth: GrokAuth, timeout: float = 20.0) -> UsageSnapshot:
     headers = {

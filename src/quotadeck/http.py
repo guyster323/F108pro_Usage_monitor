@@ -8,7 +8,6 @@ import httpx
 def _client(verify: ssl.SSLContext | bool) -> httpx.Client:
     return httpx.Client(timeout=20.0, verify=verify, follow_redirects=True)
 
-
 def request(method: str, url: str, **kwargs) -> httpx.Response:
     """HTTP helper that retries once if a corporate SSL intercept breaks certifi."""
     try:
@@ -26,7 +25,6 @@ def request(method: str, url: str, **kwargs) -> httpx.Response:
             raise
     with _client(False) as client:
         return client.request(method, url, **kwargs)
-
 
 def get(url: str, **kwargs) -> httpx.Response:
     return request("GET", url, **kwargs)

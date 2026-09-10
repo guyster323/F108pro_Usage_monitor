@@ -11,7 +11,6 @@ from quotadeck.providers.claude.credentials import ClaudeAuth
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 
-
 def parse_usage(data: dict, auth: ClaudeAuth, email_local: str = "CLAUDE") -> UsageSnapshot:
     windows: list[UsageWindow] = []
     mapping = (
@@ -52,7 +51,6 @@ def parse_usage(data: dict, auth: ClaudeAuth, email_local: str = "CLAUDE") -> Us
         error=None if windows else "no usage windows",
         source_path=str(auth.path),
     )
-
 
 def fetch_claude(auth: ClaudeAuth, timeout: float = 20.0) -> UsageSnapshot:
     headers = {

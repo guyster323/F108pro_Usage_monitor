@@ -4,22 +4,31 @@ from pathlib import Path
 
 from quotadeck.core.models import DisplayMode, Severity, UsageSnapshot
 from quotadeck.core.severity import character_state
-from quotadeck.devices.aula_f108.constants import LCD_MAX_DELAY_MS
 from quotadeck.devices.aula_f108.payload import Frame
-from quotadeck.renderer.budget import SceneBudget, allocate
-from quotadeck.renderer.layout import paint_account, paint_empty, paint_overview, paint_transition
+from quotadeck.renderer.budget import allocate
+from quotadeck.renderer.layout import paint_account, paint_empty
 from quotadeck.renderer.sprites import Theme, load_theme
 
 
-def _held(image, delay_ms: int) -> list[Frame]:
-    """Split a long hold so each firmware delay stays within 5.1 s."""
-    remaining = max(200, int(delay_ms))
-    frames: list[Frame] = []
-    while remaining > 0:
-        chunk = min(remaining, LCD_MAX_DELAY_MS)
-        frames.append(Frame(image=image, delay_ms=chunk))
-        remaining -= chunk
-    return frames
+def _sprite_index(
+    frame_index: int,
+    sprite_count: int,
+    state: str = "idle",
+    frame_count: int | None = None,
+) -> int:
+    if sprite_count <= 1:
+        return 0
+    if sprite_count == 2:
+        # Image-generated pose pairs can differ more than a one-pixel breath.
+        # Show the expression pose briefly instead of morphing twice per second.
+        slot_frames = 8 if frame_count is None else frame_count
+        if slot_frames <= 1:
+            return 0
+        expression_frame = max(1, (slot_frames - 1) // 2)
+        return 1 if frame_index == expression_frame else 0
+    # Ping-pong prevents a visible jump from the last pose to the first.
+    cycle = list(range(sprite_count)) + list(range(sprite_count - 2, 0, -1))
+    return cycle[frame_index % len(cycle)]
 
 
 def render_playlist(
@@ -31,62 +40,48 @@ def render_playlist(
     frame_budget: int = 32,
     hold_ms: int | None = None,
 ) -> list[Frame]:
-    theme_obj = theme if isinstance(theme, Theme) else load_theme(Path(theme))
+    """Render one equal-duration full-screen slot for every selected account."""
+    # A caller can construct Theme directly, so reload through the strict
+    # runtime validator instead of trusting an unchecked dataclass instance.
+    theme_obj = load_theme(theme.root) if isinstance(theme, Theme) else load_theme(Path(theme))
     if not snapshots:
         return [Frame(image=paint_empty(), delay_ms=2000)]
+
     ordered = _order(snapshots, severities, mode)
-    budget = allocate(len(snapshots), frame_budget, hold_ms=hold_ms)
-    if budget.group_by_provider:
-        return _render_grouped(snapshots, severities, theme_obj, budget, frame_budget)
+    budget = allocate(len(ordered), frame_budget, hold_ms=hold_ms)
     frames: list[Frame] = []
-    previous = None
-    for snapshot in ordered:
+    total = len(ordered)
+    for position, snapshot in enumerate(ordered, start=1):
         severity = severities.get(snapshot.key, Severity.STALE)
         state = character_state(severity).value
         sprites = theme_obj.state_images(snapshot.provider, state)
         accent = theme_obj.accent(snapshot.provider)
-        hero = paint_account(snapshot, severity, sprites[0], accent)
-        if previous is not None and budget.include_transition:
-            frames.extend(_held(paint_transition(previous, hero), budget.transition_ms))
-        frames.extend(_held(hero, budget.hero_hold_ms))
-        for i in range(budget.anim_frames):
-            sprite = sprites[(i + 1) % len(sprites)]
-            frames.extend(
-                _held(
-                    paint_account(snapshot, severity, sprite, accent),
-                    budget.anim_delay_ms,
+        for frame_index, delay_ms in enumerate(budget.frame_delays_ms):
+            sprite = sprites[
+                _sprite_index(
+                    frame_index,
+                    len(sprites),
+                    state,
+                    budget.frames_per_account,
+                )
+            ]
+            frames.append(
+                Frame(
+                    image=paint_account(
+                        snapshot,
+                        severity,
+                        sprite,
+                        accent,
+                        position=(position, total),
+                    ),
+                    delay_ms=delay_ms,
                 )
             )
-        previous = hero
-    if budget.include_overview and ordered:
-        rows = [(item, severities.get(item.key, Severity.STALE)) for item in ordered]
-        frames.extend(_held(paint_overview(rows, theme_obj.accent("codex")), budget.overview_hold_ms))
-    return frames[:frame_budget]
-
-
-def _render_grouped(snapshots, severities, theme_obj, budget, frame_budget) -> list[Frame]:
-    from collections import defaultdict
-
-    from quotadeck.renderer.layout import paint_overview
-
-    groups: dict[str, list] = defaultdict(list)
-    for snap in snapshots:
-        groups[snap.provider].append(snap)
-    frames: list[Frame] = []
-    for provider, members in groups.items():
-        rows = [(item, severities.get(item.key, Severity.STALE)) for item in members]
-        hero = members[0]
-        state = character_state(severities.get(hero.key, Severity.STALE)).value
-        sprite = theme_obj.state_images(provider, state)[0]
-        accent = theme_obj.accent(provider)
-        frames.extend(
-            _held(
-                paint_account(hero, severities.get(hero.key, Severity.STALE), sprite, accent),
-                budget.hero_hold_ms,
-            )
+    if len(frames) != budget.total_frames:
+        raise RuntimeError(
+            f"renderer produced {len(frames)} frames; budget expected {budget.total_frames}"
         )
-        frames.extend(_held(paint_overview(rows, accent), budget.overview_hold_ms))
-    return frames[:frame_budget]
+    return frames
 
 
 def _order(
@@ -96,11 +91,19 @@ def _order(
 ) -> list[UsageSnapshot]:
     if mode == DisplayMode.FIXED:
         return list(snapshots)
-    hot = {Severity.CRITICAL, Severity.CAUTION, Severity.EXHAUSTED}
-    result: list[UsageSnapshot] = []
-    for item in snapshots:
-        result.append(item)
-        if severities.get(item.key) in hot:
-            result.append(item)
-    # de-dupe adjacent extras but keep double slot for hot accounts
-    return result
+    priority = {
+        Severity.EXHAUSTED: 0,
+        Severity.CRITICAL: 1,
+        Severity.ERROR: 2,
+        Severity.CAUTION: 3,
+        Severity.OFFLINE: 4,
+        Severity.STALE: 5,
+        Severity.RESET: 6,
+        Severity.BUSY: 7,
+        Severity.HEALTHY: 8,
+    }
+    # Python's sort is stable: equal-severity accounts preserve the user's order.
+    return sorted(
+        snapshots,
+        key=lambda item: priority.get(severities.get(item.key, Severity.STALE), 5),
+    )

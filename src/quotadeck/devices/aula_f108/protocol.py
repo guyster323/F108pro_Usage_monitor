@@ -15,11 +15,10 @@ from quotadeck.devices.aula_f108.constants import (
     LCD_PAGE_BYTES,
     REPORT_LEN,
 )
-from quotadeck.devices.aula_f108.payload import page_count
+from quotadeck.devices.aula_f108.payload import validate_payload
 from quotadeck.devices.aula_f108.transport import Transport, pad64
 
 Progress = Callable[[int, int, str], None]
-
 
 class ProtocolError(RuntimeError):
     pass
@@ -34,7 +33,6 @@ def _packet(prefix: bytes, **fields: int) -> bytes:
             data[int(index[1:])] = value & 0xFF
     return bytes(data)
 
-
 def send_feature(transport: Transport, name: str, payload: bytes, *, readback: bool = True) -> bytes:
     transport.set_feature(payload)
     time.sleep(COMMAND_DELAY_S)
@@ -43,13 +41,24 @@ def send_feature(transport: Transport, name: str, payload: bytes, *, readback: b
     response = transport.get_feature()
     if len(response) < 4:
         raise ProtocolError(f"{name}: short readback")
-    if response[3] != 0x01 and response[:2] != payload[:2]:
+    # The device's success bit is authoritative. An echoed command prefix with
+    # a zero status is still a NACK and must never be reported as success.
+    if response[3] != 0x01:
         raise ProtocolError(f"{name}: device did not ACK ({response[:8].hex()})")
     return response
 
-
-def upload_payload(transport: Transport, payload: bytes, progress: Progress | None = None) -> None:
-    pages = page_count(payload)
+def upload_payload(
+    transport: Transport,
+    payload: bytes | bytearray | memoryview,
+    progress: Progress | None = None,
+) -> None:
+    # `upload_payload` is public and may receive bytes not built by
+    # `build_payload`; fail before the first HID command if the header/count,
+    # delays, padding length, or 141-frame contract is unsafe.
+    # Snapshot mutable buffers before validation so the validated bytes cannot
+    # change while HID commands are in flight.
+    payload = bytes(payload)
+    pages = validate_payload(payload)
     send_feature(transport, "begin", pad64(CMD_BEGIN))
     header = bytearray(REPORT_LEN)
     header[0:2] = CMD_LCD_HEADER
@@ -71,7 +80,6 @@ def upload_payload(transport: Transport, payload: bytes, progress: Progress | No
     if progress:
         progress(pages, pages, "flash")
     time.sleep(APPLY_SETTLE_S)
-
 
 def sync_clock(transport: Transport, when: datetime | None = None) -> datetime:
     when = when or datetime.now().astimezone()
