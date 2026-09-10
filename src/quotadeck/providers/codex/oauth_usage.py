@@ -17,7 +17,6 @@ class CodexUsageError(RuntimeError):
         super().__init__(message)
         self.stale = stale
 
-
 def _window(raw: dict | None, window_id: str, label: str) -> UsageWindow | None:
     if not raw:
         return None
@@ -38,7 +37,6 @@ def _window(raw: dict | None, window_id: str, label: str) -> UsageWindow | None:
         remaining_percent=max(0.0, 100.0 - used_f),
         resets_at=resets_at,
     )
-
 
 def parse_wham(data: dict, auth: CodexAuth) -> UsageSnapshot:
     rate = data.get("rate_limit") or {}
@@ -62,7 +60,6 @@ def parse_wham(data: dict, auth: CodexAuth) -> UsageSnapshot:
         error=None if windows else "no rate-limit windows",
         source_path=str(auth.home),
     )
-
 
 def fetch_wham(auth: CodexAuth, timeout: float = 20.0) -> UsageSnapshot:
     if not auth.access_token:

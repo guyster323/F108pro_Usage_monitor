@@ -10,7 +10,14 @@ from pathlib import Path
 
 from quotadeck.config import AppConfig, default_theme_dir, load_config
 from quotadeck.core.flashbudget import FlashBudget
-from quotadeck.core.models import AccountRef, DisplayMode, Severity, UsageSnapshot
+from quotadeck.core.models import (
+    AccountRef,
+    DisplayMode,
+    Severity,
+    UsageSnapshot,
+    display_windows,
+    normalize_remaining,
+)
 from quotadeck.core.severity import RESET_HOLD, detect_reset, snapshot_severity
 from quotadeck.core.statefile import PersistedState, default_state_path, load_state, save_state
 from quotadeck.devices.aula_f108.device import F108Device
@@ -24,18 +31,23 @@ from quotadeck.renderer.sprites import load_theme
 log = logging.getLogger("quotadeck")
 
 
+def _quota_bucket(value: object) -> int | None:
+    remaining = normalize_remaining(value)
+    return None if remaining is None else int(remaining // 5) * 5
+
+
 def render_hash(
     snapshots: list[UsageSnapshot],
     severities: dict[str, Severity],
     *,
     theme: str,
     mode: str,
-    hold_seconds: int = 10,
+    hold_seconds: float = 5,
 ) -> str:
     rows = []
     for snap in snapshots:
-        remaining = snap.critical_remaining
-        bucket = None if remaining is None else int(remaining // 5) * 5
+        remaining = normalize_remaining(snap.critical_remaining)
+        bucket = _quota_bucket(remaining)
         reset_bucket = None
         times = [w.resets_at for w in snap.windows if w.resets_at]
         if times:
@@ -48,9 +60,9 @@ def render_hash(
             {
                 "id": w.id,
                 "l": w.label,
-                "b": int(w.remaining_percent // 5) * 5,
+                "b": _quota_bucket(w.remaining_percent),
             }
-            for w in snap.windows[:2]
+            for w in display_windows(snap)
         ]
         rows.append(
             {

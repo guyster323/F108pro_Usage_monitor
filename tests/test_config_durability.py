@@ -40,7 +40,7 @@ def test_out_of_range_values_are_clamped(tmp_path: Path) -> None:
     )
     config = load_config(target)
     assert config.poll_seconds == 15
-    assert config.scene_hold_seconds == 60
+    assert config.scene_hold_seconds == 20
     assert config.min_upload_minutes == 1
     assert config.daily_flash_limit == 1
     assert config.frame_budget == 32

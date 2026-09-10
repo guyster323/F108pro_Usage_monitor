@@ -5,7 +5,6 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-
 jobs:
   test:
     runs-on: windows-latest
@@ -18,12 +17,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-      - name: Sprites
-        run: python tools/gen_sprites.py
+      - name: Sprite assets
+        run: |
+          python tools/gen_sprites.py --check
+          git diff --exit-code -- themes/quotadeck-crew
+      - name: Theme validation
+        run: python -m quotadeck theme validate themes/quotadeck-crew
+      - name: Dependency-light UX acceptance
+        run: python tools/verify_refresh.py
       - name: Test
-        run: pytest -q
-      - name: Preview GIF
-        run: python -m quotadeck render --fixture tests/fixtures/usage.json --out docs/hero-preview.gif
+        run: python -m pytest -q
+      - name: Preview artifacts
+        run: |
+          python tools/export_crew.py
+          python tools/export_preview.py
+          git diff --exit-code -- docs
       - name: PyInstaller
         if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
         run: |

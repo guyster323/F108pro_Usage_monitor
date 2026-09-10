@@ -10,7 +10,6 @@ from quotadeck.core.mask import email_local
 from quotadeck.core.models import AccountRef
 from quotadeck.providers.jwtutil import decode_payload
 
-
 @dataclass
 class CodexAuth:
     home: Path
@@ -31,7 +30,6 @@ def _parse_iso(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
-
 
 def read_auth(home: Path) -> CodexAuth | None:
     path = home / "auth.json"
@@ -79,7 +77,6 @@ def read_auth(home: Path) -> CodexAuth | None:
         stale=stale,
     )
 
-
 def candidate_homes() -> list[Path]:
     homes: list[Path] = []
     env = os.environ.get("CODEX_HOME")
@@ -114,7 +111,6 @@ def candidate_homes() -> list[Path]:
         seen.add(key)
         unique.append(home)
     return unique
-
 
 def discover_codex_accounts() -> list[AccountRef]:
     found: list[AccountRef] = []

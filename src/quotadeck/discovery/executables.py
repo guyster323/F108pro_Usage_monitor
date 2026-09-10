@@ -4,7 +4,6 @@ import os
 import shutil
 from pathlib import Path
 
-
 def find_executable(name: str) -> Path | None:
     """Locate a CLI, preferring .cmd/.exe over PowerShell shims on Windows."""
     found = shutil.which(name)

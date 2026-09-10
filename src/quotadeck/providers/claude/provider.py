@@ -10,7 +10,6 @@ from quotadeck.providers.claude.credentials import read_claude_auth
 
 class ClaudeProvider(Provider):
     id = "claude"
-
     def discover(self) -> list[AccountRef]:
         auth = read_claude_auth()
         if auth is None:
@@ -27,7 +26,6 @@ class ClaudeProvider(Provider):
                 source_label="Claude Code",
             )
         ]
-
     def fetch(self, account: AccountRef) -> UsageSnapshot:
         auth = read_claude_auth()
         if auth is None:

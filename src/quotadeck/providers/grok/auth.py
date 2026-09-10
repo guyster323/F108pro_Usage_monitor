@@ -17,7 +17,6 @@ class GrokAuth:
     expires_at: datetime | None
     auth_mode: str
     path: Path
-
     @property
     def stale(self) -> bool:
         if self.expires_at is None:
@@ -28,7 +27,6 @@ class GrokAuth:
 def grok_home() -> Path:
     env = os.environ.get("GROK_HOME")
     return Path(env) if env else Path.home() / ".grok"
-
 
 def read_grok_auth() -> GrokAuth | None:
     path = grok_home() / "auth.json"

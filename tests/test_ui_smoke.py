@@ -14,9 +14,9 @@ def test_main_window_lists_accounts() -> None:
 
     from quotadeck.app.main_window import MainWindow
     from quotadeck.config import AccountConfig, AppConfig
-
     app = QApplication.instance() or QApplication([])
     window = MainWindow(live=False)
+    assert window.hold.value() == 5
     window.config = AppConfig(
         accounts=[
             AccountConfig("codex", "demo", "TEAM", True, source_kind="cli", source_label="Codex CLI"),

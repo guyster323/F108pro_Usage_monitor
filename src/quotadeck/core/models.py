@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from math import isfinite
 from typing import Literal
 
 
@@ -16,7 +17,6 @@ class Severity(str, Enum):
     STALE = "stale"
     RESET = "reset"
     ERROR = "error"
-
 
 class CharacterState(str, Enum):
     IDLE = "idle"
@@ -35,7 +35,6 @@ class DisplayMode(str, Enum):
 
 
 SnapshotStatus = Literal["ok", "stale", "offline", "error", "rate_limited"]
-
 
 @dataclass(slots=True)
 class UsageWindow:
@@ -57,7 +56,6 @@ class AccountRef:
     source_kind: str = "cli"
     source_label: str = ""
     extra: dict[str, str] = field(default_factory=dict)
-
     @property
     def key(self) -> str:
         return f"{self.provider}:{self.account_id}"
@@ -80,13 +78,41 @@ class UsageSnapshot:
     fetched_at: datetime
     error: str | None = None
     source_path: str = ""
-
     @property
     def key(self) -> str:
         return f"{self.provider}:{self.account_id}"
 
     @property
     def critical_remaining(self) -> float | None:
-        if not self.windows:
-            return None
-        return min(w.remaining_percent for w in self.windows)
+        values = [
+            value
+            for window in self.windows
+            if (value := normalize_remaining(window.remaining_percent)) is not None
+        ]
+        return min(values) if values else None
+
+
+def normalize_remaining(remaining: object) -> float | None:
+    """Return a finite 0..100 percentage, or None for untrusted input."""
+    if remaining is None or isinstance(remaining, bool):
+        return None
+    try:
+        value = float(remaining)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not isfinite(value):
+        return None
+    return max(0.0, min(100.0, value))
+
+
+def display_windows(snapshot: UsageSnapshot) -> list[UsageWindow]:
+    """Keep the primary window and always expose the most constrained one."""
+    windows = list(snapshot.windows)
+    if len(windows) <= 2:
+        return windows
+
+    def quota_key(window: UsageWindow) -> float:
+        remaining = normalize_remaining(window.remaining_percent)
+        return 101.0 if remaining is None else remaining
+
+    return [windows[0], min(windows[1:], key=quota_key)]

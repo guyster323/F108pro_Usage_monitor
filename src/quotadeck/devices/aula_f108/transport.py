@@ -12,7 +12,6 @@ class Transport(Protocol):
     def read_lcd_ack(self, timeout_ms: int = 300) -> bytes: ...
     def close(self) -> None: ...
 
-
 def pad64(data: bytes) -> bytes:
     if len(data) > REPORT_LEN:
         raise ValueError("feature report longer than 64 bytes")

@@ -12,10 +12,8 @@ from quotadeck.providers.codex.oauth_usage import CodexUsageError, fetch_wham
 
 class CodexProvider(Provider):
     id = "codex"
-
     def discover(self) -> list[AccountRef]:
         return discover_codex_accounts()
-
     def fetch(self, account: AccountRef) -> UsageSnapshot:
         auth = read_auth(Path(account.source_path))
         if auth is None:

@@ -15,13 +15,11 @@ LABELS = (
     ("grok", "GROK", (180, 140, 255)),
 )
 
-
 def _font(size: int) -> ImageFont.ImageFont:
-    try:
-        return ImageFont.truetype("consola.ttf", size)
-    except OSError:
-        return ImageFont.load_default()
-
+    _ = size
+    # Pillow's bundled font is identical on Windows and CI; system Consolas is
+    # not, and made documentation previews drift across platforms.
+    return ImageFont.load_default()
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
@@ -36,7 +34,6 @@ def main() -> None:
         dest = OUT / f"crew-{name}.png"
         card.convert("RGB").save(dest)
         portraits.append((card, label, color))
-
     gap = 16
     width = sum(item[0].width for item in portraits) + gap * (len(portraits) + 1)
     height = max(item[0].height for item in portraits) + 32

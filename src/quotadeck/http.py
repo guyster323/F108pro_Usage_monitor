@@ -8,7 +8,6 @@ import httpx
 def _client(verify: ssl.SSLContext | bool) -> httpx.Client:
     return httpx.Client(timeout=20.0, verify=verify, follow_redirects=True)
 
-
 def request(method: str, url: str, **kwargs) -> httpx.Response:
     """HTTP helper.
 
@@ -34,7 +33,6 @@ def request(method: str, url: str, **kwargs) -> httpx.Response:
                 "If you are behind a corporate proxy, add its CA to the Windows certificate store."
             ) from first_error
         raise
-
 
 def get(url: str, **kwargs) -> httpx.Response:
     return request("GET", url, **kwargs)

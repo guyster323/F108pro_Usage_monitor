@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from math import isfinite
 
 from quotadeck.core.models import CharacterState, Severity, UsageSnapshot
 
@@ -40,12 +41,18 @@ def worst_severity(severities) -> Severity | None:
 
 
 def band_for_remaining(remaining: float | None) -> Severity:
-    if remaining is None:
+    if remaining is None or isinstance(remaining, bool):
         return Severity.STALE
-    if remaining <= 0:
+    try:
+        value = float(remaining)
+    except (TypeError, ValueError, OverflowError):
+        return Severity.STALE
+    if not isfinite(value):
+        return Severity.STALE
+    if value <= 0:
         return Severity.EXHAUSTED
     for floor, band in _BANDS:
-        if remaining >= floor:
+        if value >= floor:
             return band
     return Severity.EXHAUSTED
 

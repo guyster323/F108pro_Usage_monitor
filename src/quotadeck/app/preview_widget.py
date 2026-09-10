@@ -7,7 +7,6 @@ from PySide6.QtWidgets import QLabel
 from quotadeck.devices.aula_f108.constants import LCD_HEIGHT, LCD_WIDTH
 from quotadeck.devices.aula_f108.payload import Frame
 
-
 class LcdPreview(QLabel):
     def __init__(self, scale: int = 3) -> None:
         super().__init__()
@@ -20,7 +19,6 @@ class LcdPreview(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background:#101418; border:1px solid #2a3238;")
         self.setText("No preview")
-
     def show_image(self, image) -> None:
         self._timer.stop()
         self._frames = []
@@ -36,7 +34,6 @@ class LcdPreview(QLabel):
         self._paint(self._frames[0].image)
         if len(self._frames) > 1:
             self._timer.start(max(200, self._frames[0].delay_ms))
-
     def _advance(self) -> None:
         if not self._frames:
             self._timer.stop()
@@ -45,7 +42,6 @@ class LcdPreview(QLabel):
         frame = self._frames[self._index]
         self._paint(frame.image)
         self._timer.start(max(200, frame.delay_ms))
-
     def _paint(self, image) -> None:
         rgb = image.convert("RGB")
         data = rgb.tobytes()

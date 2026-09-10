@@ -15,7 +15,6 @@ PROVIDER_APP_LABELS = {
     "grok": "Grok App",
 }
 
-
 def classify_source(path: str, provider: str = "") -> tuple[str, str]:
     """Return (kind, label) for a credential path. kind is cli or app."""
     raw = (path or "").replace("\\", "/").lower()
@@ -28,7 +27,6 @@ def classify_source(path: str, provider: str = "") -> tuple[str, str]:
     if provider in PROVIDER_CLI_LABELS:
         return "cli", PROVIDER_CLI_LABELS[provider]
     return "cli", "CLI"
-
 
 def annotate_source(account) -> None:
     if account.source_label:

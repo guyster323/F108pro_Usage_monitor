@@ -16,7 +16,6 @@ def set_launch_at_startup(enabled: bool) -> None:
     if key_info is None:
         return
     import winreg
-
     hive, path, name = key_info
     key = winreg.OpenKey(hive, path, 0, winreg.KEY_SET_VALUE)
     try:

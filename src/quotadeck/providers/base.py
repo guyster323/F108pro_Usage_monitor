@@ -16,7 +16,6 @@ class Provider(ABC):
     def fetch(self, account: AccountRef) -> UsageSnapshot:
         raise NotImplementedError
 
-
 def all_providers() -> list[Provider]:
     from quotadeck.providers.claude.provider import ClaudeProvider
     from quotadeck.providers.codex.provider import CodexProvider

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 
 from PIL import Image
 
@@ -8,6 +9,7 @@ from quotadeck.devices.aula_f108.constants import (
     LCD_FRAME_BYTES,
     LCD_HEADER_BYTES,
     LCD_HEIGHT,
+    LCD_MAX_DELAY_MS,
     LCD_MAX_FRAMES,
     LCD_PAGE_BYTES,
     LCD_WIDTH,
@@ -23,17 +25,21 @@ class Frame:
     image: Image.Image
     delay_ms: int = 400
 
-
 def rgb888_to_rgb565(r: int, g: int, b: int) -> int:
     return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)
 
 
 def delay_byte(delay_ms: int) -> int:
-    # Keyboard stores delay as centiseconds / 2 (20 ms units), min 1, max 255 (~5.1 s).
-    centiseconds = max(1, int(round(delay_ms / 10.0)))
-    value = max(1, min(255, centiseconds // 2))
-    return value
+    # Keyboard stores delay directly in 20 ms units, min 1, max 255.
+    return max(1, min(255, quantize_delay_ms(delay_ms) // 20))
 
+
+def quantize_delay_ms(delay_ms: int | float) -> int:
+    """Round a finite duration to the nearest firmware tick (ties round up)."""
+    value = float(delay_ms)
+    if not isfinite(value):
+        raise PayloadError(f"invalid frame delay {delay_ms!r}")
+    return max(20, int((value + 10.0) // 20.0) * 20)
 
 def validate_frames(frames: list[Frame]) -> None:
     if not frames:
@@ -49,7 +55,38 @@ def validate_frames(frames: list[Frame]) -> None:
             raise PayloadError(
                 f"frame {i} is {w}x{h}; expected {LCD_WIDTH}x{LCD_HEIGHT}"
             )
+        if frame.delay_ms < 20 or frame.delay_ms > LCD_MAX_DELAY_MS:
+            raise PayloadError(
+                f"frame {i} delay is {frame.delay_ms} ms; expected 20..{LCD_MAX_DELAY_MS} ms"
+            )
+        if quantize_delay_ms(frame.delay_ms) != frame.delay_ms:
+            raise PayloadError(
+                f"frame {i} delay is {frame.delay_ms} ms; expected an exact 20 ms tick"
+            )
 
+
+def validate_payload(payload: bytes) -> int:
+    """Validate a serialized LCD payload again at the hardware boundary."""
+    pages = page_count(payload)
+    if len(payload) < LCD_HEADER_BYTES:
+        raise PayloadError("payload is shorter than the LCD header")
+    frame_count = payload[0]
+    if not 1 <= frame_count <= LCD_MAX_FRAMES:
+        raise PayloadError(
+            f"payload declares {frame_count} frames; expected 1..{LCD_MAX_FRAMES}"
+        )
+    raw_size = LCD_HEADER_BYTES + LCD_FRAME_BYTES * frame_count
+    expected_size = (
+        (raw_size + LCD_PAGE_BYTES - 1) // LCD_PAGE_BYTES
+    ) * LCD_PAGE_BYTES
+    if len(payload) != expected_size:
+        raise PayloadError(
+            f"payload length {len(payload)} does not match {frame_count} frames "
+            f"({expected_size} bytes expected)"
+        )
+    if any(value == 0 for value in payload[1 : frame_count + 1]):
+        raise PayloadError("payload contains a zero frame-delay byte")
+    return pages
 
 def image_to_rgb565(image: Image.Image) -> bytes:
     rgb = image.convert("RGB")
@@ -71,6 +108,25 @@ def image_to_rgb565(image: Image.Image) -> bytes:
     return bytes(out)
 
 
+def rgb565_to_image(pixels: bytes) -> Image.Image:
+    """Decode one LCD frame for a deterministic hardware-palette preview."""
+    if len(pixels) != LCD_FRAME_BYTES:
+        raise PayloadError(
+            f"RGB565 frame is {len(pixels)} bytes; expected {LCD_FRAME_BYTES}"
+        )
+    rgb = bytearray(LCD_WIDTH * LCD_HEIGHT * 3)
+    dst = 0
+    for src in range(0, len(pixels), 2):
+        value = pixels[src] | (pixels[src + 1] << 8)
+        red = (value >> 11) & 0x1F
+        green = (value >> 5) & 0x3F
+        blue = value & 0x1F
+        rgb[dst] = (red << 3) | (red >> 2)
+        rgb[dst + 1] = (green << 2) | (green >> 4)
+        rgb[dst + 2] = (blue << 3) | (blue >> 2)
+        dst += 3
+    return Image.frombytes("RGB", (LCD_WIDTH, LCD_HEIGHT), bytes(rgb))
+
 def build_payload(frames: list[Frame]) -> bytes:
     validate_frames(frames)
     raw_size = LCD_HEADER_BYTES + LCD_FRAME_BYTES * len(frames)
@@ -84,7 +140,6 @@ def build_payload(frames: list[Frame]) -> bytes:
         buf[start : start + LCD_FRAME_BYTES] = pix
     return bytes(buf)
 
-
 def page_count(payload: bytes) -> int:
     if len(payload) % LCD_PAGE_BYTES != 0:
         raise PayloadError("payload is not padded to 4096-byte pages")
@@ -94,7 +149,6 @@ def page_count(payload: bytes) -> int:
 def solid_frame(r: int, g: int, b: int, delay_ms: int = 1000) -> Frame:
     image = Image.new("RGB", (LCD_WIDTH, LCD_HEIGHT), (r, g, b))
     return Frame(image=image, delay_ms=delay_ms)
-
 
 def hex_to_rgb(color: str) -> tuple[int, int, int]:
     raw = color.strip().lstrip("#")

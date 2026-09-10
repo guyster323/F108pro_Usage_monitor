@@ -14,7 +14,6 @@ def discover_accounts() -> list[AccountRef]:
         annotate_source(account)
     return accounts
 
-
 def select_accounts(discovered: list[AccountRef], config: AppConfig) -> list[AccountRef]:
     """Keep only enabled config accounts. Empty config means first-run: use all."""
     if not config.accounts:

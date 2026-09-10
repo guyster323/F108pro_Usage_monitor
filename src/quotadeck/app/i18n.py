@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 STRINGS: dict[str, dict[str, str]] = {
     "ko": {
         "window_title": "QuotaDeck — F108 Pro Rate Limit",
@@ -9,14 +8,14 @@ STRINGS: dict[str, dict[str, str]] = {
         "mode_smart": "스마트",
         "mode_fixed": "고정",
         "poll": "사용량 조회",
-        "hold": "화면 유지",
+        "hold": "계정당 표시 시간",
         "min_upload": "키보드 기록",
         "suffix_sec": " 초",
         "suffix_min": " 분",
         "poll_tip": "PC가 Codex/Cursor 등 사용량을 다시 읽는 주기입니다. 키보드 플래시에는 쓰지 않습니다.",
-        "hold_tip": "키보드 LCD에서 계정 화면이 다음으로 넘어가기 전에 머무는 시간입니다.",
+        "hold_tip": "캐릭터 애니메이션을 포함해 각 계정이 LCD 전체 화면에 표시되는 총 시간입니다.",
         "upload_tip": "키보드 내부 저장공간에 다시 기록하는 최소 간격입니다. 짧게 하면 수명이 줄어듭니다.",
-        "timing_hint": "조회는 PC가 API를 읽는 주기입니다. 화면 유지는 LCD에서 계정이 바뀌는 간격입니다.",
+        "timing_hint": "사용량 조회·계정당 표시·키보드 기록은 서로 독립된 시간입니다.",
         "startup": "Windows 시작 시 실행",
         "detect": "계정 다시 찾기",
         "preview": "미리보기",
@@ -41,7 +40,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "status_saved": "설정을 저장했습니다",
         "status_reading": "사용량을 읽는 중…",
         "status_uploading": "키보드에 올리는 중…",
-        "status_preview": "미리보기 준비 · 선택 {enabled}개 · 조회 {count}개 · 화면 {hold}초",
+        "status_preview": "미리보기 준비 · 선택 {enabled}개 · 조회 {count}개 · 계정당 {hold}초",
         "warn_usb": "F108 Pro가 USB-C 유선(Fn+4)으로 연결되어 있는지 확인하세요.",
         "warn_aula": "공식 AULA 프로그램을 먼저 종료하세요: {names}",
         "tray_open": "QuotaDeck 열기",
@@ -72,14 +71,14 @@ STRINGS: dict[str, dict[str, str]] = {
         "mode_smart": "Smart",
         "mode_fixed": "Fixed",
         "poll": "Usage poll",
-        "hold": "Scene hold",
+        "hold": "Time per account",
         "min_upload": "Keyboard write",
         "suffix_sec": " sec",
         "suffix_min": " min",
         "poll_tip": "How often this PC re-reads usage from Codex/Cursor and others. Does not write keyboard flash.",
-        "hold_tip": "How long each account stays on the LCD before the next scene.",
+        "hold_tip": "Total full-screen time per account, including character animation.",
         "upload_tip": "Minimum interval before rewriting onboard storage. Faster writes shorten flash life.",
-        "timing_hint": "Poll only refreshes numbers on the PC. Scene hold is the LCD rotation interval.",
+        "timing_hint": "Usage polling, time per account and keyboard writes are independent timers.",
         "startup": "Launch at Windows startup",
         "detect": "Detect accounts",
         "preview": "Preview",
@@ -104,7 +103,7 @@ STRINGS: dict[str, dict[str, str]] = {
         "status_saved": "Settings saved",
         "status_reading": "Reading usage…",
         "status_uploading": "Uploading to keyboard…",
-        "status_preview": "Preview ready · {enabled} selected · {count} fetched · hold {hold}s",
+        "status_preview": "Preview ready · {enabled} selected · {count} fetched · {hold}s/account",
         "warn_usb": "Connect the F108 Pro over USB-C wired mode (Fn+4).",
         "warn_aula": "Close official AULA software first: {names}",
         "tray_open": "Open QuotaDeck",
@@ -128,7 +127,6 @@ STRINGS: dict[str, dict[str, str]] = {
         "tip_last_upload": "Last LCD write: {time}",
     },
 }
-
 
 def tr(lang: str, key: str, **kwargs: object) -> str:
     table = STRINGS.get(lang) or STRINGS["ko"]

@@ -4,58 +4,52 @@ from datetime import timezone
 
 from PIL import Image, ImageDraw
 
-from quotadeck.core.models import Severity, UsageSnapshot, UsageWindow
+from quotadeck.core.models import (
+    Severity,
+    UsageSnapshot,
+    UsageWindow,
+    display_windows,
+    normalize_remaining,
+)
+from quotadeck.core.severity import band_for_remaining
 from quotadeck.devices.aula_f108.constants import LCD_HEIGHT, LCD_WIDTH
 from quotadeck.renderer.canvas import (
     BORDER,
-    INK,
     MUTED,
     PANEL,
-    PANEL_2,
     TEXT,
     draw_corner_brackets,
-    draw_holo_pad,
     draw_panel,
-    draw_pixel_number,
-    draw_text,
-    draw_thin_bar,
+    draw_pixel_text,
+    draw_split_quota_bar,
     new_canvas,
-    pixel_number_width,
+    pixel_identifier,
+    pixel_text_width,
     severity_color,
+    truncate_pixel_middle,
+    truncate_pixel_text,
 )
 
-# Inclusive pixel boxes. Character bay and rate bay never overlap.
-HEADER = (4, 3, 235, 17)
-CHAR_BAY = (4, 20, 86, 131)
-RATE_BAY = (93, 20, 235, 131)
-SPRITE_SLOT = (7, 24, 83, 101)
-STATE_BADGE = (8, 114, 82, 127)
-RATE_HERO = (97, 24, 231, 67)
-RATE_WEEK = (97, 71, 231, 103)
-RESET_CARD = (97, 107, 231, 127)
-
+# Inclusive pixel boxes. A single account always owns the full LCD.
+HEADER = (3, 3, 236, 18)
+CHAR_BAY = (3, 21, 92, 132)
+RATE_BAY = (97, 21, 236, 132)
+SPRITE_SLOT = (4, 23, 91, 130)
+RATE_TOP = (97, 21, 236, 74)
+RATE_BOTTOM = (97, 79, 236, 132)
+RATE_SINGLE = RATE_BAY
 WEEKDAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
-STATUS_PILL = {
-    "healthy": "ONLINE",
-    "busy": "ONLINE",
-    "caution": "LOW",
-    "critical": "ALERT",
-    "exhausted": "ALERT",
-    "reset": "RESET",
-    "offline": "OFF",
-    "stale": "STALE",
-    "error": "ERROR",
-}
-STATE_LABEL = {
-    "healthy": "RUNNING",
-    "busy": "RUNNING",
-    "caution": "RESERVE",
-    "critical": "DEPLETED",
-    "exhausted": "DEPLETED",
-    "reset": "RECHARGE",
-    "offline": "OFFLINE",
-    "stale": "STALE",
-    "error": "ERROR",
+
+METER_COLORS = {
+    Severity.HEALTHY: (8, 93, 74),
+    Severity.BUSY: (25, 93, 123),
+    Severity.CAUTION: (115, 81, 0),
+    Severity.CRITICAL: (132, 40, 58),
+    Severity.EXHAUSTED: (132, 40, 58),
+    Severity.OFFLINE: (66, 73, 74),
+    Severity.STALE: (107, 81, 33),
+    Severity.ERROR: (132, 40, 58),
+    Severity.RESET: (8, 93, 74),
 }
 
 
@@ -65,7 +59,8 @@ def _hex(color: str) -> tuple[int, int, int]:
 
 
 def reset_parts(snapshot: UsageSnapshot) -> tuple[str, str] | None:
-    times = [w.resets_at for w in snapshot.windows if w.resets_at]
+    """Retained for API compatibility; reset text is no longer put on the LCD."""
+    times = [window.resets_at for window in snapshot.windows if window.resets_at]
     if not times:
         return None
     soonest = min(times)
@@ -75,42 +70,116 @@ def reset_parts(snapshot: UsageSnapshot) -> tuple[str, str] | None:
     return WEEKDAYS[local.weekday()], local.strftime("%H:%M")
 
 
-def _percent_text(value: float | None) -> str:
-    if value is None:
-        return "--%"
-    return f"{max(0, min(100, int(round(value))))}%"
+def _meter_color(remaining: float | None) -> tuple[int, int, int]:
+    return METER_COLORS[band_for_remaining(normalize_remaining(remaining))]
 
 
-def _meter_color(remaining: float) -> tuple[int, int, int]:
-    if remaining <= 10:
-        return severity_color("critical")
-    if remaining <= 20:
-        return severity_color("caution")
-    return (30, 226, 176)
+def _compact_window_label(label: str) -> str:
+    raw = " ".join(label.upper().replace("_", " ").split())
+    dense = raw.replace(" ", "")
+    if dense in {"5H", "5HR", "5HRS"} or ("5" in dense and "HOUR" in dense):
+        return "5H"
+    if "WEEK" in dense:
+        return "WEEKLY"
+    if "OTHER" in dense:
+        return "OTHER"
+    if "AUTO" in dense or "CURSOR" in dense:
+        return "AUTO"
+    return truncate_pixel_text(raw or "QUOTA", 104, scale=2)
 
 
-def _right_pixel_number(
-    image: Image.Image,
-    right: int,
-    y: int,
-    text: str,
-    fill: tuple[int, int, int],
-    scale: int = 5,
-) -> None:
-    width = pixel_number_width(text, scale)
-    draw_pixel_number(image, (right - width, y), text, fill=fill, scale=scale)
-
-
-def _fit_sprite(sprite: Image.Image, slot: tuple[int, int, int, int]) -> tuple[Image.Image, tuple[int, int]]:
+def _fit_sprite(
+    sprite: Image.Image,
+    slot: tuple[int, int, int, int],
+) -> tuple[Image.Image, tuple[int, int]]:
+    """Fit oversized art without cropping it, then bottom-center the character."""
     x0, y0, x1, y1 = slot
     max_w = x1 - x0 + 1
     max_h = y1 - y0 + 1
     fitted = sprite.convert("RGBA")
     if fitted.width > max_w or fitted.height > max_h:
-        fitted = fitted.crop((0, 0, min(fitted.width, max_w), min(fitted.height, max_h)))
+        alpha_box = fitted.getchannel("A").getbbox()
+        if alpha_box:
+            fitted = fitted.crop(alpha_box)
+        scale = min(max_w / max(1, fitted.width), max_h / max(1, fitted.height))
+        size = (
+            max(1, int(round(fitted.width * scale))),
+            max(1, int(round(fitted.height * scale))),
+        )
+        fitted = fitted.resize(size, Image.Resampling.NEAREST)
     sx = x0 + max(0, (max_w - fitted.width) // 2)
-    sy = y0 + max(0, (max_h - fitted.height) // 2)
-    return fitted, (sx, sy)
+    sy = y1 - fitted.height + 1
+    return fitted, (sx, max(y0, sy))
+
+
+def _draw_header(
+    image: Image.Image,
+    snapshot: UsageSnapshot,
+    severity: Severity,
+    accent: tuple[int, int, int],
+    position: tuple[int, int] | None,
+) -> None:
+    draw = ImageDraw.Draw(image)
+    draw.rectangle(HEADER, fill=PANEL, outline=BORDER)
+    provider = truncate_pixel_text(snapshot.provider, 70, scale=2)
+    draw_pixel_text(image, (6, 4), provider, fill=accent, scale=2)
+    alias_x = 6 + pixel_text_width(provider, scale=2) + 6
+    index_x: int | None = None
+    if position:
+        index = f"{position[0]}/{position[1]}"
+        index_x = 220 - pixel_text_width(index)
+    right_edge = index_x - 6 if index_x is not None else 220
+    alias = truncate_pixel_middle(
+        pixel_identifier(snapshot.display_name),
+        max(0, right_edge - alias_x),
+        scale=2,
+    )
+    if alias:
+        draw_pixel_text(image, (alias_x, 4), alias, fill=MUTED, scale=2)
+    if position:
+        assert index_x is not None
+        draw_pixel_text(
+            image,
+            (index_x, 7),
+            index,
+            fill=TEXT,
+        )
+    _draw_status_icon(draw, severity, severity_color(severity.value))
+
+
+def _draw_status_icon(
+    draw: ImageDraw.ImageDraw,
+    severity: Severity,
+    color: tuple[int, int, int],
+) -> None:
+    """Draw a tiny shape cue so status never depends on colour alone."""
+    if severity == Severity.HEALTHY:
+        draw.polygon(((231, 5), (235, 9), (231, 14), (227, 9)), fill=color)
+    elif severity == Severity.BUSY:
+        draw.line(((227, 6), (230, 9), (227, 12)), fill=color, width=2)
+        draw.line(((231, 6), (234, 9), (231, 12)), fill=color, width=2)
+    elif severity == Severity.CAUTION:
+        draw.line(((231, 5), (235, 14), (227, 14), (231, 5)), fill=color)
+        draw.point((231, 11), fill=color)
+    elif severity == Severity.CRITICAL:
+        draw.rectangle((230, 5, 232, 10), fill=color)
+        draw.rectangle((230, 13, 232, 14), fill=color)
+    elif severity == Severity.EXHAUSTED:
+        draw.line(((227, 5), (235, 14)), fill=color, width=2)
+        draw.line(((235, 5), (227, 14)), fill=color, width=2)
+    elif severity == Severity.ERROR:
+        draw.rectangle((227, 5, 235, 14), outline=color)
+        draw.line(((229, 7), (231, 6), (233, 7), (231, 10)), fill=color)
+        draw.point((231, 12), fill=color)
+    elif severity == Severity.OFFLINE:
+        draw.rectangle((227, 8, 235, 11), fill=color)
+        draw.point(((227, 6), (235, 13)), fill=color)
+    elif severity == Severity.STALE:
+        draw.rectangle((228, 6, 234, 13), outline=color)
+        draw.line(((231, 7), (231, 10), (233, 11)), fill=color)
+    else:  # reset
+        draw.ellipse((227, 5, 235, 14), outline=color)
+        draw.polygon(((233, 5), (236, 5), (235, 8)), fill=color)
 
 
 def paint_account(
@@ -118,111 +187,81 @@ def paint_account(
     severity: Severity,
     sprite: Image.Image,
     accent: str,
+    *,
+    position: tuple[int, int] | None = None,
 ) -> Image.Image:
     image = new_canvas()
     draw = ImageDraw.Draw(image)
-    color = severity_color(severity.value)
     accent_rgb = _hex(accent)
-
-    draw.rectangle((0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1), outline=(18, 36, 44))
-    draw_text(image, (6, 4), snapshot.provider.upper()[:8], fill=accent_rgb, size=10)
-    alias = snapshot.display_name[:8].upper()
-    draw_text(image, (64, 5), f"// {alias}", fill=MUTED, size=8)
-    pill = STATUS_PILL.get(severity.value, "ONLINE")
-    draw_text(image, (186 if len(pill) > 5 else 196, 4), pill, fill=color, size=9)
+    draw.rectangle((0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1), outline=BORDER)
+    _draw_header(image, snapshot, severity, accent_rgb, position)
 
     draw_panel(image, CHAR_BAY, fill=PANEL, outline=BORDER)
-    draw_panel(image, RATE_BAY, fill=PANEL, outline=BORDER)
-    draw.rectangle((87, 20, 92, 131), fill=(7, 12, 20))
-    draw_corner_brackets(image, CHAR_BAY, color=accent_rgb)
-    draw_corner_brackets(image, RATE_BAY, color=BORDER)
-
-    draw_holo_pad(image, (45, 97), accent=accent_rgb)
+    draw_corner_brackets(image, CHAR_BAY, color=accent_rgb, arm=6)
     fitted, origin = _fit_sprite(sprite, SPRITE_SLOT)
     image.paste(fitted, origin, fitted)
 
-    bx0, by0, bx1, by1 = STATE_BADGE
-    draw.rectangle((bx0, by0, bx1, by1), fill=PANEL_2, outline=(20, 60, 64))
-    draw_text(image, (bx0 + 4, by0 + 2), STATE_LABEL.get(severity.value, "RUNNING")[:10], fill=color, size=8)
-
-    windows = list(snapshot.windows[:2])
+    windows = display_windows(snapshot)
     if not windows and snapshot.critical_remaining is not None:
         windows = [
             UsageWindow(
-                id="left",
-                label="LEFT",
+                id="remaining",
+                label="QUOTA",
                 used_percent=100 - snapshot.critical_remaining,
                 remaining_percent=snapshot.critical_remaining,
             )
         ]
 
-    if windows:
-        hero = windows[0]
-        hero_text = _percent_text(hero.remaining_percent)
-        hero_color = _meter_color(hero.remaining_percent)
-        draw_panel(image, RATE_HERO, fill=PANEL_2, outline=(20, 52, 58))
-        draw_text(image, (101, 27), f"{hero.label[:6].upper()} LEFT", fill=MUTED, size=8)
-        _right_pixel_number(image, 227, 28, hero_text, INK if hero.remaining_percent > 20 else hero_color)
-        draw_thin_bar(image, (101, 58), hero.remaining_percent, hero_color, width=126)
-
-    if len(windows) > 1:
-        week = windows[1]
-        week_text = _percent_text(week.remaining_percent)
-        week_color = _meter_color(week.remaining_percent)
-        draw_panel(image, RATE_WEEK, fill=PANEL_2, outline=(20, 52, 58))
-        draw_text(image, (101, 74), f"{week.label[:6].upper()} LEFT", fill=MUTED, size=8)
-        _right_pixel_number(image, 227, 76, week_text, week_color, scale=4)
-        draw_thin_bar(image, (101, 98), week.remaining_percent, week_color, width=126)
+    if len(windows) >= 2:
+        for box, window in zip((RATE_TOP, RATE_BOTTOM), windows, strict=False):
+            draw_split_quota_bar(
+                image,
+                box,
+                window.remaining_percent,
+                _compact_window_label(window.label),
+                _meter_color(window.remaining_percent),
+                outline=BORDER,
+            )
     elif windows:
-        draw_panel(image, RATE_WEEK, fill=PANEL_2, outline=(20, 52, 58))
-        draw_text(image, (101, 80), snapshot.plan.upper()[:12] if snapshot.plan else "QUOTA", fill=MUTED, size=8)
-
-    draw_panel(image, RESET_CARD, fill=PANEL_2, outline=(20, 60, 64))
-    draw_text(image, (101, 110), "RESET", fill=MUTED, size=7)
-    parts = reset_parts(snapshot)
-    reset_value = f"{parts[0]} {parts[1]}" if parts else "-- --:--"
-    draw_text(image, (101, 118), reset_value, fill=INK, size=9)
-    draw.rectangle((214, 112, 219, 117), fill=color)
-    draw.rectangle((222, 112, 227, 117), outline=color)
+        window = windows[0]
+        draw_split_quota_bar(
+            image,
+            RATE_SINGLE,
+            window.remaining_percent,
+            _compact_window_label(window.label),
+            _meter_color(window.remaining_percent),
+            outline=BORDER,
+        )
+    else:
+        draw_split_quota_bar(
+            image,
+            RATE_SINGLE,
+            None,
+            "NO DATA",
+            METER_COLORS.get(severity, METER_COLORS[Severity.STALE]),
+            outline=BORDER,
+        )
     return image
 
 
 def paint_empty() -> Image.Image:
     image = new_canvas()
     draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1), outline=BORDER)
+    draw_panel(image, HEADER, fill=PANEL, outline=BORDER)
+    draw_pixel_text(image, (6, 4), "QUOTADECK", fill=(25, 215, 156), scale=2)
     draw_panel(image, CHAR_BAY, fill=PANEL, outline=BORDER)
-    draw_panel(image, RATE_BAY, fill=PANEL, outline=BORDER)
-    draw.rectangle((87, 20, 92, 131), fill=(7, 12, 20))
-    draw_corner_brackets(image, CHAR_BAY, color=BORDER)
-    draw_corner_brackets(image, RATE_BAY, color=BORDER)
-    draw_text(image, (6, 4), "QUOTADECK", fill=(30, 226, 176), size=10)
-    draw_text(image, (186, 4), "IDLE", fill=MUTED, size=9)
-    draw_text(image, (14, 58), "NO", fill=MUTED, size=12)
-    draw_text(image, (14, 76), "CREW", fill=MUTED, size=12)
-    draw_panel(image, RATE_HERO, fill=PANEL_2, outline=(20, 52, 58))
-    draw_text(image, (101, 32), "NO ACCOUNTS", fill=INK, size=11)
-    draw_text(image, (101, 48), "OPEN APP / DETECT", fill=MUTED, size=8)
-    draw_panel(image, RATE_WEEK, fill=PANEL_2, outline=(20, 52, 58))
-    draw_text(image, (101, 80), "CLI OR APP LOGIN", fill=MUTED, size=8)
-    draw_panel(image, RESET_CARD, fill=PANEL_2, outline=(20, 60, 64))
-    draw_text(image, (101, 110), "RESET", fill=MUTED, size=7)
-    draw_text(image, (101, 118), "-- --:--", fill=INK, size=9)
-    return image
-
-
-def paint_overview(rows: list[tuple[UsageSnapshot, Severity]], accent: str = "#3DDC97") -> Image.Image:
-    image = new_canvas()
-    draw_text(image, (8, 6), "AI CREW", fill=_hex(accent), size=12)
-    y = 28
-    for snapshot, severity in rows[:7]:
-        color = severity_color(severity.value)
-        label = f"{snapshot.provider[:6].upper()} {snapshot.display_name[:8]}"
-        remaining = snapshot.critical_remaining
-        value = "--%" if remaining is None else f"{int(round(remaining))}%"
-        draw_text(image, (8, y), "●", fill=color, size=10)
-        draw_text(image, (22, y), label[:16], fill=TEXT, size=10)
-        _right_pixel_number(image, 228, y - 2, value, color, scale=2)
-        y += 14
+    draw_corner_brackets(image, CHAR_BAY, color=BORDER, arm=6)
+    draw_pixel_text(image, (19, 62), "NO", fill=MUTED, scale=2)
+    draw_pixel_text(image, (8, 81), "CREW", fill=MUTED, scale=2)
+    draw_split_quota_bar(
+        image,
+        RATE_SINGLE,
+        None,
+        "NO ACCOUNT",
+        METER_COLORS[Severity.STALE],
+        outline=BORDER,
+    )
     return image
 
 
