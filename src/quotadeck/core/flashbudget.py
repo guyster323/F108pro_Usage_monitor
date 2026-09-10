@@ -41,6 +41,20 @@ class FlashBudget:
             return True, "interval ok"
         return False, "blocked"
 
+    def next_allowed(self, now: datetime | None = None) -> datetime | None:
+        """Earliest moment a non-forced upload may run, or None if allowed now."""
+        now = now or datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        self._roll(now)
+        if self.uploads_today >= self.daily_limit:
+            midnight = datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc)
+            return midnight
+        if self.last_upload is None:
+            return None
+        ready = self.last_upload + self.min_interval
+        return ready if ready > now else None
+
     def stale(self, now: datetime | None = None) -> bool:
         now = now or datetime.now(timezone.utc)
         if self.last_upload is None:

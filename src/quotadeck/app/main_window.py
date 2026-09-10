@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -23,13 +23,15 @@ from PySide6.QtWidgets import (
 
 from quotadeck.app.i18n import tr
 from quotadeck.app.preview_widget import LcdPreview
+from quotadeck.app.refresh_controller import RefreshController
 from quotadeck.app.startup import set_launch_at_startup
 from quotadeck.app.stepper import Stepper
 from quotadeck.app.tray import attach_tray, severity_icon
 from quotadeck.config import AccountConfig, AppConfig, account_config_from_ref, load_config, save_config
 from quotadeck.core.flashbudget import FlashBudget
-from quotadeck.core.models import DisplayMode, Severity, UsageSnapshot
-from quotadeck.core.scheduler import QuotaDeckRuntime
+from quotadeck.core.models import DisplayMode, UsageSnapshot
+from quotadeck.core.scheduler import QuotaDeckRuntime, UploadResult
+from quotadeck.core.severity import worst_severity
 from quotadeck.devices.aula_f108.device import aula_software_running, enumerate_interfaces, wired_mode_ok
 from quotadeck.discovery.accounts import discover_accounts
 
@@ -50,39 +52,6 @@ QPushButton#lang { min-width: 44px; padding: 6px 10px; }
 QListWidget { background: #141A1E; border: 1px solid #2A3238; }
 QCheckBox { color: #E8F0F4; }
 """
-
-
-class Worker(QThread):
-    done = Signal(str)
-    failed = Signal(str)
-
-    def __init__(self, runtime: QuotaDeckRuntime, force: bool = True) -> None:
-        super().__init__()
-        self.runtime = runtime
-        self.force = force
-
-    def run(self) -> None:
-        try:
-            self.done.emit(self.runtime.tick(force=self.force))
-        except Exception as exc:
-            self.failed.emit(str(exc))
-
-
-class PreviewWorker(QThread):
-    done = Signal(object, object)
-    failed = Signal(str)
-
-    def __init__(self, runtime: QuotaDeckRuntime) -> None:
-        super().__init__()
-        self.runtime = runtime
-
-    def run(self) -> None:
-        try:
-            snapshots = self.runtime.poll()
-            frames = self.runtime.build_frames(snapshots)
-            self.done.emit(snapshots, frames)
-        except Exception as exc:
-            self.failed.emit(str(exc))
 
 
 class AccountRow(QWidget):
@@ -153,14 +122,19 @@ class MainWindow(QMainWindow):
         self.resize(920, 620)
         self.config = load_config()
         self.runtime = QuotaDeckRuntime(self.config)
-        self.worker: Worker | None = None
-        self.preview_worker: PreviewWorker | None = None
+        self.controller = RefreshController(self.runtime, self)
+        self.controller.polled.connect(self._on_polled)
+        self.controller.upload_done.connect(self._on_upload_done)
+        self.controller.poll_failed.connect(self._on_poll_failed)
+        self.controller.schedule_updated.connect(self._on_schedule)
+        self.controller.busy_changed.connect(self.set_busy)
         self.rows: list[AccountRow] = []
         self._busy = False
         self.tray_show = None
+        self.tray_refresh = None
         self.tray_upload = None
         self.tray_quit = None
-        self.tray = attach_tray(self, self.runtime) if live else None
+        self.tray = attach_tray(self) if live else None
 
         root = QWidget()
         layout = QHBoxLayout(root)
@@ -228,6 +202,8 @@ class MainWindow(QMainWindow):
         self.keyboard = QLabel("")
         self.preview = LcdPreview(3)
         self.status = QLabel()
+        self.sched = QLabel("")
+        self.sched.setStyleSheet("color:#8CB4B0;")
         self.flash = QLabel("")
         self.flash.setWordWrap(True)
         self.flash.setStyleSheet("color:#8CB4B0;")
@@ -238,6 +214,7 @@ class MainWindow(QMainWindow):
         right.addWidget(self.keyboard)
         right.addWidget(self.preview)
         right.addWidget(self.status)
+        right.addWidget(self.sched)
         right.addWidget(self.flash)
         right.addWidget(self.missing)
         right.addStretch()
@@ -248,7 +225,7 @@ class MainWindow(QMainWindow):
         self.reload_accounts()
         self.apply_language()
         if live:
-            self.refresh_preview()
+            self.controller.start()
 
     def _lang(self) -> str:
         return "en" if self.config.ui_language == "en" else "ko"
@@ -291,6 +268,7 @@ class MainWindow(QMainWindow):
             self.status.setText(self._t("ready"))
         if self.tray_show is not None:
             self.tray_show.setText(self._t("tray_open"))
+            self.tray_refresh.setText(self._t("tray_refresh"))
             self.tray_upload.setText(self._t("tray_upload"))
             self.tray_quit.setText(self._t("tray_quit"))
         self.update_flash_label()
@@ -298,10 +276,10 @@ class MainWindow(QMainWindow):
         self.update_missing_label()
 
     def toggle_language(self) -> None:
-        cfg = self.collect_config()
-        cfg.ui_language = "en" if self._lang() == "ko" else "ko"
-        self.config = cfg
-        save_config(cfg)
+        # Only the language changes here; other pending edits are saved by
+        # the explicit Save action so saved values and runtime never diverge.
+        self.config.ui_language = "en" if self._lang() == "ko" else "ko"
+        save_config(self.config)
         self.apply_language()
 
     def set_busy(self, busy: bool) -> None:
@@ -311,6 +289,8 @@ class MainWindow(QMainWindow):
             button.setEnabled(enabled)
         if self.tray_upload is not None:
             self.tray_upload.setEnabled(enabled)
+        if self.tray_refresh is not None:
+            self.tray_refresh.setEnabled(enabled)
 
     def reload_accounts(self) -> None:
         self.list.clear()
@@ -374,27 +354,26 @@ class MainWindow(QMainWindow):
         self.refresh_preview()
 
     def apply(self) -> None:
+        # Save settings and hand them to the long-lived runtime; never rebuild
+        # the runtime, so flash budget and upload history are preserved.
         self.config = self.collect_config()
         save_config(self.config)
         set_launch_at_startup(self.config.launch_at_startup)
-        self.runtime = QuotaDeckRuntime(self.config)
+        self.controller.update_config(self.config)
         self.update_flash_label()
         self.status.setText(self._t("status_saved"))
 
     def refresh_preview(self) -> None:
-        if self._busy:
-            return
         self.apply()
-        self.set_busy(True)
         self.status.setText(self._t("status_reading"))
-        self.preview_worker = PreviewWorker(self.runtime)
-        self.preview_worker.done.connect(self._on_preview)
-        self.preview_worker.failed.connect(self._on_fail)
-        self.preview_worker.start()
+        self.controller.request_refresh()
+
+    def refresh_from_tray(self) -> None:
+        # Tray action: read the latest usage without saving pending edits and
+        # without forcing an LCD write.
+        self.controller.request_refresh()
 
     def upload_now(self) -> None:
-        if self._busy:
-            return
         self.apply()
         self.update_keyboard_status()
         interfaces = enumerate_interfaces()
@@ -405,54 +384,76 @@ class MainWindow(QMainWindow):
         if running:
             QMessageBox.warning(self, "QuotaDeck", self._t("warn_aula", names=", ".join(running)))
             return
-        self.set_busy(True)
         self.status.setText(self._t("status_uploading"))
-        self.worker = Worker(self.runtime, force=True)
-        self.worker.done.connect(self._on_done)
-        self.worker.failed.connect(self._on_fail)
-        self.worker.start()
+        self.controller.request_upload()
 
-    def _on_preview(self, snapshots, frames) -> None:
-        self.set_busy(False)
+    def _on_polled(self, snapshots: list[UsageSnapshot], frames) -> None:
         self._apply_snapshots(snapshots)
         if frames:
             self.preview.show_frames(frames)
-        count = len(snapshots)
-        enabled = sum(1 for item in self.config.accounts if item.enabled)
-        self.status.setText(
+        ok = sum(1 for snap in snapshots if snap.status == "ok")
+        self.status.setText(self._t("status_poll", ok=ok, total=len(snapshots)))
+        self._update_tray()
+
+    def _on_upload_done(self, result: UploadResult, manual: bool) -> None:
+        self.status.setText(self._upload_text(result))
+        self._update_tray()
+        if manual and result.code == "device_error":
+            QMessageBox.warning(self, "QuotaDeck", result.detail)
+
+    def _on_poll_failed(self, message: str, manual: bool) -> None:
+        # Automatic refreshes must never spam modal popups from the tray.
+        self.status.setText(self._t("status_poll_failed", error=message))
+        if manual:
+            QMessageBox.warning(self, "QuotaDeck", message)
+
+    def _on_schedule(self, last_poll: datetime | None, next_poll: datetime | None) -> None:
+        self.sched.setText(
             self._t(
-                "status_preview",
-                enabled=enabled,
-                count=count,
-                hold=self.config.scene_hold_seconds,
+                "sched_line",
+                last=_fmt_time(last_poll),
+                next=_fmt_time(next_poll),
             )
         )
+        self._update_tray()
 
-    def _on_done(self, message: str) -> None:
-        self.set_busy(False)
-        self.status.setText(message)
-        frames = self.runtime.state.last_frames
-        if frames:
-            self.preview.show_frames(frames)
-        self._apply_snapshots(list(self.runtime.state.previous.values()))
-        worst = None
-        if self.runtime.state.severity:
-            worst = min(self.runtime.state.severity.values(), key=lambda item: list(Severity).index(item))
-        if self.tray is not None:
-            self.tray.setIcon(severity_icon(worst))
-            uploaded = self.runtime.budget.last_upload
-            if uploaded:
-                self.tray.setToolTip(self._t("tray_last", time=uploaded.astimezone().strftime("%H:%M")))
+    def _upload_text(self, result: UploadResult) -> str:
+        key = {
+            "uploaded": "up_uploaded",
+            "preview": "up_uploaded",
+            "unchanged": "up_unchanged",
+            "cooldown": "up_cooldown",
+            "daily_limit": "up_daily",
+            "device_offline": "up_offline",
+            "device_busy": "up_busy",
+            "no_accounts": "up_no_accounts",
+            "device_error": "up_error",
+        }.get(result.code, "up_error")
+        return self._t(
+            key,
+            frames=result.frames,
+            detail=result.detail,
+            next=_fmt_time(result.next_allowed),
+        )
+
+    def _update_tray(self) -> None:
+        if self.tray is None:
+            return
+        worst = worst_severity(self.runtime.state.severity.values())
+        self.tray.setIcon(severity_icon(worst))
+        lines = ["QuotaDeck"]
+        if self.controller.last_poll is not None:
+            lines.append(self._t("tip_last_poll", time=_fmt_time(self.controller.last_poll)))
+        if self.controller.next_poll is not None:
+            lines.append(self._t("tip_next_poll", time=_fmt_time(self.controller.next_poll)))
+        if self.runtime.budget.last_upload is not None:
+            lines.append(self._t("tip_last_upload", time=_fmt_time(self.runtime.budget.last_upload)))
+        self.tray.setToolTip("\n".join(lines))
 
     def _apply_snapshots(self, snapshots: list[UsageSnapshot]) -> None:
         by_key = {item.key: item for item in snapshots}
         for row in self.rows:
             row.set_usage(by_key.get(f"{row.account.provider}:{row.account.account_id}"))
-
-    def _on_fail(self, message: str) -> None:
-        self.set_busy(False)
-        QMessageBox.warning(self, "QuotaDeck", message)
-        self.status.setText(message)
 
     def update_flash_label(self) -> None:
         budget = FlashBudget(min_interval=timedelta(minutes=self.min_up.value()))
@@ -495,6 +496,7 @@ class MainWindow(QMainWindow):
         )
 
     def close_app(self) -> None:
+        self.controller.shutdown()
         QApplication.quit()
 
     def closeEvent(self, event) -> None:  # noqa: N802
@@ -502,7 +504,16 @@ class MainWindow(QMainWindow):
         self.hide()
 
 
+def _fmt_time(when: datetime | None) -> str:
+    if when is None:
+        return "--:--"
+    return when.astimezone().strftime("%H:%M:%S")
+
+
 def run_app() -> int:
+    from quotadeck.core.logs import setup_logging
+
+    setup_logging()
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     app.setStyleSheet(APP_QSS)
