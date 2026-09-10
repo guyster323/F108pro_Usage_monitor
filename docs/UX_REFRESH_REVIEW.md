@@ -23,7 +23,7 @@
 | 마지막 summary를 읽을 수 없었다. | 240×135 안에 여러 계정과 수치를 동시에 축소해 넣어 글자 높이와 정보 밀도가 LCD 물리 한계를 넘었다. | summary 계열을 playlist에서 완전히 제거하고 계정별 화면에 전체 면적을 배정한다. |
 | Quota 정보가 멀리서 구분되지 않았다. | 얇은 막대와 막대 밖의 작은 레이블·숫자가 서로 다른 시선 위치에 있었고, 배경 대비도 일정하지 않았다. | 막대 자체를 정보 카드로 만들고 레이블과 퍼센트를 내부에 넣는다. 채움 경계를 기준으로 글자색을 분할한다. |
 | 캐릭터가 작거나 뭉개졌다. | 원본 아트, 런타임 크기, 투명 여백, 상태 프레임, RGB565 변환에 대한 재현 가능한 계약이 없었다. | 이미지 생성 원본과 런타임 PNG를 분리하고, 88×108·binary alpha·48색·RGB565-safe 변환을 자동화한다. |
-| 설정한 초와 실재 재생 시간이 어긋날 수 있었다. | F108 펌웨어는 delay를 20ms 단위 1바이트로 저장한다. 일반 밀리초를 프레임별로 반올림하면 누적 오차가 생긴다. | 먼저 전체 시간을 20ms tick으로 양자화한 다음 정수 tick을 프레임에 나눠 합계를 정확히 보존한다. |
+| 설정한 초와 실재 재생 시간이 어긋날 수 있었다. | F108 펌웨어는 delay를 2ms 단위 1바이트로 저장한다. 일반 밀리초를 프레임별로 반올림하면 누적 오차가 생긴다. | 먼저 전체 시간을 2ms tick으로 양자화한 다음 정수 tick을 프레임에 나눠 합계를 정확히 보존한다. |
 
 ## 240×135 화면 레이아웃 계약
 
@@ -41,7 +41,7 @@
 
 두 막대 사이에는 4px 간격이 있다. 각 패널의 2px inset을 제외한 실제 채움 track은 두 막대일 때 136×50, 한 막대일 때 136×108이다. usage window가 3개 이상이면 첫 primary window와 나머지 중 잔량이 가장 낮은 window를 표시한다. 따라서 작은 막대를 늘리지 않으면서도 전체 severity를 만든 위험 quota가 숨지 않는다.
 
-## 정확한 계정별 5초 / 20ms 시간 계약
+## 정확한 계정별 5초 / 2ms 시간 계약
 
 표시 시간과 provider polling, 플래시 업로드 제한은 서로 다른 개념이다.
 
@@ -53,20 +53,20 @@
 
 기본 5초 계약은 다음 순서로 만들어진다.
 
-1. 요청 시간 `requested_ms`를 가장 가까운 20ms tick으로 양자화한다.
-   `total_ticks = max(1, round(requested_ms / 20))`
-2. 실제 계정 시간은 `account_hold_ms = total_ticks × 20`이다.
+1. 요청 시간 `requested_ms`를 가장 가까운 2ms tick으로 양자화한다.
+   `total_ticks = max(1, round(requested_ms / 2))`
+2. 실제 계정 시간은 `account_hold_ms = total_ticks × 2`이다.
 3. 유효 frame budget은 요청값, soft cap 48, 펌웨어 hard limit 141 중 가장 작은 값이다.
 4. 계정 수가 `N`이면 계정당 수용량은 `floor(budget / N)`이다.
-5. 한 프레임의 최대 delay가 5,100ms이므로 계정당 최소 프레임 수는 `ceil(account_hold_ms / 5100)`이다. 모든 계정을 안전하게 담을 수 없으면 계정을 조용히 누락하지 않고 `SceneBudgetError`를 낸다.
-6. 가능한 범위에서 계정당 최대 8프레임을 사용한다. `divmod(total_ticks, frames_per_account)`로 tick을 나누고 나머지 tick은 마지막 프레임부터 1개씩 더한다.
-7. payload는 각 프레임 delay를 정확히 `delay_ms / 20`인 1바이트 값으로 저장한다. 허용 범위는 1~255 tick, 즉 20~5,100ms다.
+5. 한 프레임의 최대 delay가 510ms이므로 계정당 최소 프레임 수는 `ceil(account_hold_ms / 510)`이다. 모든 계정을 안전하게 담을 수 없으면 계정을 조용히 누락하지 않고 `SceneBudgetError`를 낸다.
+6. 가능한 범위에서 계정당 기본 8프레임을 사용하되, 510ms 상한을 지키기 위해 필요한 최소 프레임 수가 더 크면 그 수를 사용한다. `divmod(total_ticks, frames_per_account)`로 tick을 나누고 나머지 tick은 마지막 프레임부터 1개씩 더한다.
+7. payload는 각 프레임 delay를 정확히 `delay_ms / 2`인 1바이트 값으로 저장한다. 허용 범위는 1~255 tick, 즉 2~510ms다.
 
-기본값에서 계정당 8프레임이면 delay는 `620ms × 6 + 640ms × 2 = 5,000ms`다. payload에는 `31 × 6 + 32 × 2 = 250 tick`으로 기록되므로 하드웨어 재생 합도 정확히 5초다. 계정이 8개이고 frame budget이 32라면 계정당 4프레임을 사용하며 `1,240ms × 2 + 1,260ms × 2 = 5,000ms`가 된다.
+기본값에서 계정당 10프레임이면 delay는 `500ms × 10 = 5,000ms`다. payload에는 `250 × 10 = 2,500 tick`으로 기록되므로 하드웨어 재생 합도 정확히 5초다. 기본 frame budget 48에서는 네 계정이 계정당 10프레임을 사용한다.
 
 따라서 빈 계정 예외 화면을 제외하면 한 playlist의 총 재생 시간은 `선택 계정 수 × 계정별 hold`다. FIXED는 사용자 순서를 유지하고 SMART는 severity 순으로 안정 정렬하지만, 두 모드 모두 각 계정을 한 번만 표시한다.
 
-설정 파일은 `config_version = 2`다. 새 설정 또는 필드가 없는 설정에는 5초를 적용한다. 구버전 JSON에 이미 `scene_hold_seconds`가 있으면 과거 기본값과 사용자의 명시적 선택을 구분할 수 없으므로 2~20초 범위의 4초·10초 같은 명시값은 보존하고 범위 밖 값은 clamp한다. 저장할 때는 항상 현재 config version을 기록한다. GUI는 2~20초 범위이며, `quotadeck render --hold-seconds`도 유한한 2~20초 값과 정확한 20ms 단위만 허용한다.
+설정 파일은 `config_version = 3`다. 새 설정 또는 필드가 없는 설정에는 5초를 적용한다. 구버전 JSON에 이미 `scene_hold_seconds`가 있으면 과거 기본값과 사용자의 명시적 선택을 구분할 수 없으므로 2~20초 범위의 4초·10초 같은 명시값은 보존하고 범위 밖 값은 clamp한다. 이전 버전의 기본 frame budget 32는 2ms tick에서 네 계정의 5초 슬롯을 담을 수 없어 48로 자동 승격한다. 저장할 때는 항상 현재 config version을 기록한다. GUI는 2~20초 범위이며, `quotadeck render --hold-seconds`도 유한한 2~20초 값과 정확한 2ms 단위만 허용한다.
 
 ## Split-text Quota bar
 
@@ -125,15 +125,15 @@ themes/quotadeck-crew/provider/<provider>/<state>_01.png
 
 | 경로 | 책임 |
 |---|---|
-| `src/quotadeck/config.py` | 새 설정의 5초 기본값, 기존 명시값 보존, config v2 기록, 2~20초 저장 범위 |
+| `src/quotadeck/config.py` | 새 설정의 5초 기본값, 기존 명시값 보존, config v3 기록, 2~20초 저장 범위 |
 | `src/quotadeck/app/i18n.py` | 설정을 “계정당 표시 시간”으로 명확히 설명하고 미리보기 상태에 hold 표시 |
 | `src/quotadeck/cli.py` | `render --hold-seconds`, `--mode`를 저장 설정과 연결하고 범위·tick 검증 |
-| `src/quotadeck/renderer/budget.py` | 20ms tick 기반의 균등·정확한 account slot 및 frame budget 오류 처리 |
+| `src/quotadeck/renderer/budget.py` | 2ms tick 기반의 균등·정확한 account slot 및 frame budget 오류 처리 |
 | `src/quotadeck/renderer/scenes.py` | account-only playlist, summary/transition/중복 제거, 상태 애니메이션 |
 | `src/quotadeck/renderer/layout.py` | 240×135 고정 좌표, 88×108 캐릭터 슬롯, 1/2개 full-height quota bar |
 | `src/quotadeck/renderer/canvas.py` | 결정적 픽셀 글꼴, 큰 퍼센트, split-colour text mask |
 | `src/quotadeck/renderer/sprites.py` | schema/HUD, 88×108 static RGBA, binary alpha, visible palette, symlink, 상태/프레임 무결성의 strict runtime 검증 |
-| `src/quotadeck/devices/aula_f108/payload.py`, `protocol.py` | 전송 입력을 불변 snapshot으로 고정한 뒤 20ms delay, 5,100ms/frame, 141-frame header, 정확한 payload 길이를 HID 쓰기 전에 재검증 |
+| `src/quotadeck/devices/aula_f108/payload.py`, `protocol.py` | 전송 입력을 불변 snapshot으로 고정한 뒤 2ms delay, 510ms/frame, 141-frame header, 정확한 payload 길이를 HID 쓰기 전에 재검증 |
 | `tools/extract_checker_alpha.py`, `tools/normalize_sprite_sheet.py` | 생성 결과의 제한적 checker 복구, 1280×1280 grid·cell gutter·body baseline 정규화 |
 | `tools/gen_sprites.py` | 4×4 원본을 64개 런타임 asset과 manifest로 재현하고 staging 교체·semantic freshness/contact-sheet 검증 |
 | `tools/export_preview.py` | README/문서용 GIF와 RGB565 round-trip hardware-palette preview 출력 |
@@ -167,7 +167,7 @@ git status --short
 - `verify_refresh.py`, sprite `--check`, theme validation, 전체 pytest가 모두 exit code 0이다.
 - sprite 재생성 후 `themes/quotadeck-crew`에 예상하지 않은 diff가 생기지 않는다.
 - 렌더 프레임은 모두 240×135이고 총 frame 수는 soft cap 48 및 hard limit 141을 넘지 않는다.
-- 각 계정의 payload delay 합이 기본값에서 정확히 250 tick, 즉 5,000ms다.
+- 각 계정의 payload delay 합이 기본값에서 정확히 2,500 tick, 즉 5,000ms다.
 - SMART/FIXED 모두 선택 계정의 누락과 중복이 없다.
 - raw payload는 불변 snapshot으로 고정되며 HID 명령을 보내기 전에 1~141 frame, non-zero delay, frame 수에 맞는 정확한 padded length를 만족해야 한다.
 - 50% bar의 글자 픽셀이 fill 쪽에서는 흰색, empty 쪽에서는 검은색 계열이다.
@@ -185,8 +185,8 @@ git status --short
 | strict `theme validate` | 통과 |
 | `tools/verify_refresh.py` | 통과 — config, split bar, identity, visible-window, 5초 slot, payload/NACK 검사 |
 | 파괴적 output-path/미관리 target 수동 검사 | 통과 — source/theme/preview 중첩 거부, 기존 marker 보존 |
-| 전체 `pytest` | 통과 — 124 passed (격리된 임시 `APPDATA`, offscreen Qt) |
-| preview 생성 | 통과 — 240×135, 32 frames; `docs/hud-preview.png` 생성 |
+| 전체 `pytest` | 통과 — 126 passed (격리된 임시 `APPDATA`, offscreen Qt) |
+| preview 생성 | 통과 — 240×135, 40 frames; `docs/hud-preview.png` 생성 |
 | Windows PyInstaller 빌드 | 통과 — `dist/QuotaDeck.exe` 생성 |
 | 실제 F108 Pro 업로드 | 미실행 — 수동 hardware QA 필요 |
 
@@ -237,7 +237,7 @@ Codex에는 다음과 같이 요청할 수 있다.
 
 ```text
 docs/UX_REFRESH_REVIEW.md를 먼저 읽고 현재 구현과 diff를 대조해 줘.
-사용자 변경을 덮어쓰지 말고, 계정별 정확한 5초/20ms 계약과
+사용자 변경을 덮어쓰지 말고, 계정별 정확한 5초/2ms 계약과
 240x135 full-bar UI, 4x4 source -> 88x108 runtime asset 파이프라인을 보존해.
 PR #4를 통합해야 하면 scheduler/state 기능과 UX 기능을 의미 단위로 병합하고
 tools/verify_refresh.py, sprite --check, theme validate, 전체 pytest, preview를 실행해.

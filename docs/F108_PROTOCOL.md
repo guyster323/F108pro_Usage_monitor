@@ -22,7 +22,7 @@ Never send LCD pages as SET_REPORT control transfers — that crashes firmware.
 4. `04 02` apply (readback). Device writes SPI flash (~3 s).
 ## Payload
 
-- 256-byte header: `byte[0]=frame_count`, `byte[1+i]=delay_ms/20`, rest `0xFF`. Every delay must already be an exact 20ms tick in the 20–5,100ms range.
+- 256-byte header: `byte[0]=frame_count`, `byte[1+i]=delay_ms/2`, rest `0xFF`. Every delay must already be an exact 2ms tick in the 2–510ms range. The 2ms unit is based on hardware timing calibration; the older reverse-engineering note that described this field as 20ms was off by 10×.
 - Each frame: 240×135 RGB565 little-endian (64,800 bytes)
 - Pad to a multiple of 4096 with `0xFF`
 - Hard maximum **141 frames**. Firmware does not bound-check; overflow corrupts menu graphics.

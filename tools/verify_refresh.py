@@ -32,7 +32,10 @@ from quotadeck.core.models import (
 )
 from quotadeck.core.severity import band_for_remaining, snapshot_severity
 from quotadeck.devices.aula_f108.constants import (
+    LCD_DEFAULT_BUDGET,
+    LCD_DELAY_TICK_MS,
     LCD_HEIGHT,
+    LCD_MAX_DELAY_MS,
     LCD_MAX_FRAMES,
     LCD_PAGE_BYTES,
     LCD_WIDTH,
@@ -107,7 +110,7 @@ def _check_config() -> None:
         save_config(AppConfig(scene_hold_seconds=7), path)
         assert load_config(path).scene_hold_seconds == 7
     assert _account_seconds("5") == 5.0
-    for invalid in ("0", "-1", "nan", "inf", "5.01", "20.01"):
+    for invalid in ("0", "-1", "nan", "inf", "5.001", "20.001"):
         try:
             _account_seconds(invalid)
         except Exception:
@@ -239,20 +242,22 @@ def _check_rotation_and_payload() -> None:
         ordered = _order(snapshots, severities, mode)
         assert len(ordered) == len(snapshots)
         assert {item.key for item in ordered} == {item.key for item in snapshots}
-        budget = allocate(len(ordered), 32, hold_ms=5000)
+        budget = allocate(len(ordered), LCD_DEFAULT_BUDGET, hold_ms=5000)
         frames = render_playlist(
             snapshots,
             severities,
             theme,
             mode=mode,
-            frame_budget=32,
+            frame_budget=LCD_DEFAULT_BUDGET,
             hold_ms=5000,
         )
-        assert len(frames) == budget.total_frames <= 32
+        assert len(frames) == budget.total_frames <= LCD_DEFAULT_BUDGET
         for index in range(len(ordered)):
             start = index * budget.frames_per_account
             account_frames = frames[start : start + budget.frames_per_account]
-            encoded_ms = sum(delay_byte(frame.delay_ms) * 20 for frame in account_frames)
+            encoded_ms = sum(
+                delay_byte(frame.delay_ms) * LCD_DELAY_TICK_MS for frame in account_frames
+            )
             assert encoded_ms == 5000
         assert all(frame.image.size == (LCD_WIDTH, LCD_HEIGHT) for frame in frames)
         payload = build_payload(frames)
@@ -266,7 +271,7 @@ def _check_rotation_and_payload() -> None:
     else:
         raise AssertionError("impossible budget did not raise SceneBudgetError")
 
-    validate_frames([solid_frame(0, 0, 0, 5100)] * LCD_MAX_FRAMES)
+    validate_frames([solid_frame(0, 0, 0, LCD_MAX_DELAY_MS)] * LCD_MAX_FRAMES)
     try:
         validate_frames([Frame(new_canvas(), 5120)])
     except PayloadError:
@@ -274,7 +279,7 @@ def _check_rotation_and_payload() -> None:
     else:
         raise AssertionError("unsafe frame delay was accepted")
     try:
-        validate_frames([Frame(new_canvas(), 30)])
+        validate_frames([Frame(new_canvas(), 31)])
     except PayloadError:
         pass
     else:

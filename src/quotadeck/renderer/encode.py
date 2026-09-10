@@ -5,7 +5,7 @@ from pathlib import Path
 from quotadeck.devices.aula_f108.payload import Frame, validate_frames
 
 def write_gif(frames: list[Frame], path: Path) -> Path:
-    # Keep preview/export timing under the same 20 ms and size contract as the
+    # Keep preview/export timing under the same 2 ms and size contract as the
     # hardware payload. Otherwise GIF centisecond rounding can hide bad input.
     validate_frames(frames)
     images = [frame.image.convert("P", palette=1, colors=64) for frame in frames]
