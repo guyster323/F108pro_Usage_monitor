@@ -18,10 +18,12 @@ LCD_HEADER_BYTES = 256
 LCD_PAGE_BYTES = 4096
 LCD_MAX_FRAMES = 141
 LCD_SOFT_CAP = 48
-LCD_DEFAULT_BUDGET = 32
+LCD_DEFAULT_BUDGET = 48
 LCD_IMAGE_NUMBER = 1
-# Firmware stores delay in 20 ms units, max 255 → 5.1 s per frame.
-LCD_MAX_DELAY_MS = 255 * 20
+# The F108 firmware counts each delay byte in 2 ms units. The 255-byte
+# ceiling therefore limits one frame to 510 ms.
+LCD_DELAY_TICK_MS = 2
+LCD_MAX_DELAY_MS = 255 * LCD_DELAY_TICK_MS
 
 CMD_BEGIN = bytes([0x04, 0x18])
 CMD_APPLY = bytes([0x04, 0x02])

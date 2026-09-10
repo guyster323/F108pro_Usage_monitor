@@ -71,7 +71,7 @@ def test_custom_hold_survives_save_load(tmp_path) -> None:
     save_config(AppConfig(scene_hold_seconds=7), path)
     loaded = load_config(path)
     assert loaded.scene_hold_seconds == 7
-    assert loaded.config_version == 2
+    assert loaded.config_version == 3
 
 
 def test_save_always_stamps_current_config_version(tmp_path) -> None:

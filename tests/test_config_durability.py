@@ -43,7 +43,7 @@ def test_out_of_range_values_are_clamped(tmp_path: Path) -> None:
     assert config.scene_hold_seconds == 20
     assert config.min_upload_minutes == 1
     assert config.daily_flash_limit == 1
-    assert config.frame_budget == 32
+    assert config.frame_budget == 48
     assert config.display_mode.value == "smart"
 
 
@@ -75,3 +75,14 @@ def test_save_is_atomic_and_roundtrips(tmp_path: Path) -> None:
     loaded = load_config(target)
     assert loaded.poll_seconds == 90
     assert loaded.min_upload_minutes == 20
+
+
+def test_legacy_default_frame_budget_is_migrated(tmp_path: Path) -> None:
+    target = tmp_path / "config.json"
+    target.write_text(
+        json.dumps({"config_version": 2, "frame_budget": 32}),
+        encoding="utf-8",
+    )
+    config = load_config(target)
+    assert config.frame_budget == 48
+    assert config.config_version == 3

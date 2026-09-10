@@ -4,6 +4,7 @@ from pathlib import Path
 
 from quotadeck.core.models import DisplayMode, Severity, UsageSnapshot
 from quotadeck.core.severity import character_state
+from quotadeck.devices.aula_f108.constants import LCD_DEFAULT_BUDGET
 from quotadeck.devices.aula_f108.payload import Frame
 from quotadeck.renderer.budget import allocate
 from quotadeck.renderer.layout import paint_account, paint_empty
@@ -37,7 +38,7 @@ def render_playlist(
     theme: Theme | Path,
     *,
     mode: DisplayMode = DisplayMode.SMART,
-    frame_budget: int = 32,
+    frame_budget: int = LCD_DEFAULT_BUDGET,
     hold_ms: int | None = None,
 ) -> list[Frame]:
     """Render one equal-duration full-screen slot for every selected account."""
@@ -45,7 +46,7 @@ def render_playlist(
     # runtime validator instead of trusting an unchecked dataclass instance.
     theme_obj = load_theme(theme.root) if isinstance(theme, Theme) else load_theme(Path(theme))
     if not snapshots:
-        return [Frame(image=paint_empty(), delay_ms=2000)]
+        return [Frame(image=paint_empty(), delay_ms=500)]
 
     ordered = _order(snapshots, severities, mode)
     budget = allocate(len(ordered), frame_budget, hold_ms=hold_ms)

@@ -89,6 +89,10 @@ With saved accounts, the background scheduler evaluates automatic uploads. Enabl
 **Launch at Windows startup** to resume the app after boot.
 Default timings are **60 seconds / 5 seconds / 10 minutes**. They are not the same clock.
 
+The F108 Pro delay byte is measured in 2 ms ticks. QuotaDeck expands a 5-second
+account slot into ten 500 ms frames, so the saved GUI value matches the time
+played by the keyboard. Existing settings files are migrated automatically.
+
 | Setting | Default | What it does |
 | --- | --- | --- |
 | **Usage poll** | 60 s | How often this PC re-reads APIs. Does not write keyboard flash. |

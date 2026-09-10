@@ -9,7 +9,11 @@ from quotadeck import __version__
 from quotadeck.config import account_config_from_ref, default_theme_dir, load_config, save_config
 from quotadeck.core.mask import mask_text
 from quotadeck.core.scheduler import QuotaDeckRuntime
-from quotadeck.devices.aula_f108.constants import LCD_MAX_FRAMES
+from quotadeck.devices.aula_f108.constants import (
+    LCD_DEFAULT_BUDGET,
+    LCD_DELAY_TICK_MS,
+    LCD_MAX_FRAMES,
+)
 from quotadeck.devices.aula_f108.device import aula_software_running, enumerate_interfaces, wired_mode_ok
 from quotadeck.devices.aula_f108.payload import Frame, hex_to_rgb, solid_frame
 from quotadeck.discovery.accounts import discover_accounts
@@ -32,10 +36,13 @@ def _account_seconds(raw: str) -> float:
         raise argparse.ArgumentTypeError("must be a number") from exc
     if not math.isfinite(value) or not 2.0 <= value <= 20.0:
         raise argparse.ArgumentTypeError("must be a finite value from 2 to 20 seconds")
-    ticks = value * 50.0
+    ticks = value * 1000.0 / LCD_DELAY_TICK_MS
     if not math.isclose(ticks, round(ticks), abs_tol=1e-9):
-        raise argparse.ArgumentTypeError("must use 0.02-second (20 ms) increments")
-    return round(ticks) / 50.0
+        raise argparse.ArgumentTypeError(
+            f"must use {LCD_DELAY_TICK_MS / 1000:g}-second "
+            f"({LCD_DELAY_TICK_MS} ms) increments"
+        )
+    return round(ticks) * LCD_DELAY_TICK_MS / 1000.0
 
 def cmd_probe(_args: argparse.Namespace) -> int:
     running = aula_software_running()
@@ -75,7 +82,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
     from quotadeck.devices.aula_f108.protocol import upload_payload
     if args.solid:
         r, g, b = hex_to_rgb(args.solid)
-        frames = [solid_frame(r, g, b, delay_ms=1000)]
+        frames = [solid_frame(r, g, b, delay_ms=500)]
     elif args.gif:
         frames = load_gif(Path(args.gif))
     else:
@@ -268,7 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ren.add_argument("--fixture")
     p_ren.add_argument("--out", default="preview.gif")
     p_ren.add_argument("--theme")
-    p_ren.add_argument("--budget", default="32")
+    p_ren.add_argument("--budget", default=str(LCD_DEFAULT_BUDGET))
     p_ren.add_argument(
         "--hold-seconds",
         type=_account_seconds,

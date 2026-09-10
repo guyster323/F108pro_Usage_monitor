@@ -61,7 +61,7 @@ source compiler:
 
 `fps` is currently validated metadata only. It does not control playback
 cadence; account duration and the one-shot secondary pose are driven by the
-20ms frame delays in `renderer.budget` and `_sprite_index()`.
+2ms frame delays in `renderer.budget` and `_sprite_index()`.
 
 ## Editing safely
 

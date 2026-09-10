@@ -9,6 +9,7 @@ from quotadeck.devices.aula_f108.constants import (
     LCD_FRAME_BYTES,
     LCD_HEADER_BYTES,
     LCD_HEIGHT,
+    LCD_DELAY_TICK_MS,
     LCD_MAX_DELAY_MS,
     LCD_MAX_FRAMES,
     LCD_PAGE_BYTES,
@@ -30,8 +31,8 @@ def rgb888_to_rgb565(r: int, g: int, b: int) -> int:
 
 
 def delay_byte(delay_ms: int) -> int:
-    # Keyboard stores delay directly in 20 ms units, min 1, max 255.
-    return max(1, min(255, quantize_delay_ms(delay_ms) // 20))
+    # The F108 firmware stores delay directly in 2 ms units, min 1, max 255.
+    return max(1, min(255, quantize_delay_ms(delay_ms) // LCD_DELAY_TICK_MS))
 
 
 def quantize_delay_ms(delay_ms: int | float) -> int:
@@ -39,7 +40,11 @@ def quantize_delay_ms(delay_ms: int | float) -> int:
     value = float(delay_ms)
     if not isfinite(value):
         raise PayloadError(f"invalid frame delay {delay_ms!r}")
-    return max(20, int((value + 10.0) // 20.0) * 20)
+    return max(
+        LCD_DELAY_TICK_MS,
+        int((value + LCD_DELAY_TICK_MS / 2) // LCD_DELAY_TICK_MS)
+        * LCD_DELAY_TICK_MS,
+    )
 
 def validate_frames(frames: list[Frame]) -> None:
     if not frames:
@@ -55,13 +60,15 @@ def validate_frames(frames: list[Frame]) -> None:
             raise PayloadError(
                 f"frame {i} is {w}x{h}; expected {LCD_WIDTH}x{LCD_HEIGHT}"
             )
-        if frame.delay_ms < 20 or frame.delay_ms > LCD_MAX_DELAY_MS:
+        if frame.delay_ms < LCD_DELAY_TICK_MS or frame.delay_ms > LCD_MAX_DELAY_MS:
             raise PayloadError(
-                f"frame {i} delay is {frame.delay_ms} ms; expected 20..{LCD_MAX_DELAY_MS} ms"
+                f"frame {i} delay is {frame.delay_ms} ms; expected "
+                f"{LCD_DELAY_TICK_MS}..{LCD_MAX_DELAY_MS} ms"
             )
         if quantize_delay_ms(frame.delay_ms) != frame.delay_ms:
             raise PayloadError(
-                f"frame {i} delay is {frame.delay_ms} ms; expected an exact 20 ms tick"
+                f"frame {i} delay is {frame.delay_ms} ms; expected an exact "
+                f"{LCD_DELAY_TICK_MS} ms tick"
             )
 
 
@@ -146,7 +153,7 @@ def page_count(payload: bytes) -> int:
     return len(payload) // LCD_PAGE_BYTES
 
 
-def solid_frame(r: int, g: int, b: int, delay_ms: int = 1000) -> Frame:
+def solid_frame(r: int, g: int, b: int, delay_ms: int = 500) -> Frame:
     image = Image.new("RGB", (LCD_WIDTH, LCD_HEIGHT), (r, g, b))
     return Frame(image=image, delay_ms=delay_ms)
 

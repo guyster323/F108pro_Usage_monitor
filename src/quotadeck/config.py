@@ -7,11 +7,13 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from quotadeck.core.models import AccountRef, DisplayMode
+from quotadeck.devices.aula_f108.constants import LCD_DEFAULT_BUDGET, LCD_SOFT_CAP
 
 log = logging.getLogger("quotadeck")
 
-CONFIG_VERSION = 2
+CONFIG_VERSION = 3
 DEFAULT_SCENE_HOLD_SECONDS = 5
+LEGACY_DEFAULT_FRAME_BUDGET = 32
 
 
 def app_dir() -> Path:
@@ -62,7 +64,7 @@ class AppConfig:
     ui_language: str = "ko"
     max_age_minutes: int = 60
     daily_flash_limit: int = 100
-    frame_budget: int = 32
+    frame_budget: int = LCD_DEFAULT_BUDGET
     launch_at_startup: bool = False
     config_version: int = CONFIG_VERSION
 
@@ -113,6 +115,23 @@ def _clamp_int(value: object, lo: int, hi: int, fallback: int) -> int:
     return max(lo, min(hi, number))
 
 
+def _frame_budget(raw: dict) -> int:
+    """Load the frame budget and migrate the old timing default."""
+    value = _clamp_int(
+        raw.get("frame_budget", LCD_DEFAULT_BUDGET),
+        1,
+        LCD_SOFT_CAP,
+        LCD_DEFAULT_BUDGET,
+    )
+    try:
+        version = int(raw.get("config_version", 1))
+    except (TypeError, ValueError, OverflowError):
+        version = 1
+    if version < CONFIG_VERSION and value == LEGACY_DEFAULT_FRAME_BUDGET:
+        return LCD_DEFAULT_BUDGET
+    return value
+
+
 def _account_from_dict(raw_account: object) -> AccountConfig | None:
     if not isinstance(raw_account, dict):
         return None
@@ -156,7 +175,7 @@ def load_config(path: Path | None = None) -> AppConfig:
             min_upload_minutes=_clamp_int(raw.get("min_upload_minutes", 10), 1, 720, 10),
             max_age_minutes=_clamp_int(raw.get("max_age_minutes", 60), 1, 1440, 60),
             daily_flash_limit=_clamp_int(raw.get("daily_flash_limit", 100), 1, 1000, 100),
-            frame_budget=_clamp_int(raw.get("frame_budget", 32), 1, 64, 32),
+            frame_budget=_frame_budget(raw),
             launch_at_startup=bool(raw.get("launch_at_startup", False)),
             ui_language="en" if raw.get("ui_language") == "en" else "ko",
             config_version=CONFIG_VERSION,
