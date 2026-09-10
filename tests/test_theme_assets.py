@@ -36,7 +36,7 @@ def test_generated_theme_contract() -> None:
                     assert image.mode == "RGBA"
                     assert image.size == theme.sprite_size
                     alpha = image.getchannel("A")
-                    assert set(alpha.getdata()) <= {0, 255}
+                    assert set(alpha.tobytes()) <= {0, 255}
                     assert alpha.getbbox()[3] == theme.sprite_size[1] - 2
 
 

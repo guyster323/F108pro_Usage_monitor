@@ -176,7 +176,7 @@ git status --short
 
 자동 검사가 통과해도 실기기 완료 조건은 별도다. Windows에서 공식 AULA 앱을 완전히 종료하고, 키보드를 USB 케이블로 연결한 뒤 사용자 LCD slot에 업로드한다. 실제 LCD에서 각 계정을 스톱워치로 5초씩 확인하고, 0%·50%·100% bar의 경계 글자, 두 줄 quota, 네 provider의 상태 애니메이션, 밝기와 시야각을 확인한다. 이 실기기 검증 전에는 “hardware verified”로 표시하지 않는다.
 
-### 이 source 전달본의 검증 기록 — 2026-09-10
+### 통합 checkout의 검증 기록 — 2026-09-10
 
 | 검사 | 결과 |
 |---|---|
@@ -185,28 +185,28 @@ git status --short
 | strict `theme validate` | 통과 |
 | `tools/verify_refresh.py` | 통과 — config, split bar, identity, visible-window, 5초 slot, payload/NACK 검사 |
 | 파괴적 output-path/미관리 target 수동 검사 | 통과 — source/theme/preview 중첩 거부, 기존 marker 보존 |
-| 전체 `pytest` | 이 실행 환경에 `pytest`가 없어 미실행 (`No module named pytest`) |
-| GUI/provider/device 통합 | 이 실행 환경에 PySide6/httpx/hid가 없어 미실행 |
-| Windows exe 빌드 및 실제 F108 Pro 업로드 | 미실행 |
+| 전체 `pytest` | 통과 — 124 passed (격리된 임시 `APPDATA`, offscreen Qt) |
+| preview 생성 | 통과 — 240×135, 32 frames; `docs/hud-preview.png` 생성 |
+| Windows PyInstaller 빌드 | 통과 — `dist/QuotaDeck.exe` 생성 |
+| 실제 F108 Pro 업로드 | 미실행 — 수동 hardware QA 필요 |
 
-따라서 dependency-light 코드·렌더·asset 계약은 검증됐지만, 위의 미실행 항목은
-Windows 로컬 checkout에서 완료해야 한다. 이 표를 전체 pytest나 hardware 검증을
-통과했다는 의미로 해석하지 않는다.
+따라서 코드·렌더·asset 계약과 Windows 패키징은 검증됐다. 실제 LCD의 밝기,
+시야각, RGB565 손실, USB 업로드와 5초 체감 재생은 별도 수동 검증으로 남아
+있으며, 이를 완료하기 전에는 “hardware verified”로 표시하지 않는다.
 
-## PR #4 충돌 주의
+## PR #4 통합 기록
 
-문서 작성 시점의 열린 [PR #4 — `feat: add persistent tray refresh scheduler`](https://github.com/guyster323/F108pro_Usage_monitor/pull/4)는 장기 실행 tray refresh, 상태 영속화, timeout/logging을 다룬다. 이 UX refresh와 목적은 보완 관계지만 파일 단위로 한쪽을 통째로 선택하면 기능이 사라질 수 있다.
+병합된 [PR #4 — `feat: add persistent tray refresh scheduler`](https://github.com/guyster323/F108pro_Usage_monitor/pull/4)의 장기 실행 tray refresh, 상태 영속화, timeout/logging을 이 checkout에 의미 단위로 통합했다. UX refresh와 목적이 보완 관계이므로 파일 단위 선택 대신 두 기능의 계약을 함께 유지했다.
 
-직접 겹치는 주요 경로는 `README.md`, `src/quotadeck/app/i18n.py`, `src/quotadeck/cli.py`, `src/quotadeck/config.py`다. PR #4가 수정하는 `main_window.py`, `core/scheduler.py`, `core/severity.py`도 display hold, render hash, UI 상태와 연결되므로 의미 단위 검토가 필요하다. 특히 PR #4의 `dist/QuotaDeck.exe`는 소스 충돌을 해결하고 전체 검증·빌드를 마친 뒤 새로 생성해야 하며, 어느 쪽 바이너리도 그대로 채택하지 않는다.
+직접 겹치는 주요 경로는 `README.md`, `src/quotadeck/app/i18n.py`, `src/quotadeck/cli.py`, `src/quotadeck/config.py`다. PR #4가 수정하는 `main_window.py`, `core/scheduler.py`, `core/severity.py`도 display hold, render hash, UI 상태와 연결되므로 의미 단위 검토가 필요하다. 통합 후에는 현재 소스에서 전체 검증을 다시 실행하고 `dist/QuotaDeck.exe`를 새로 생성했다.
 
-권장 통합 순서는 다음과 같다.
+통합 결과는 다음과 같다.
 
-1. UX refresh를 독립 branch와 commit으로 먼저 보존한다.
-2. 별도의 disposable integration branch에서 PR #4를 merge/rebase 또는 commit `3961a44` cherry-pick으로 가져온다.
-3. PR #4의 `RefreshController`, flash 상태 영속화, timeout/logging을 유지한다.
-4. UX refresh의 새 설정 5초 기본값·기존 설정 보존, render hash의 hold 반영, account-only playlist, full-bar renderer와 asset pipeline을 유지한다.
-5. `i18n.py`와 `main_window.py`에서는 장기 refresh 상태와 “계정당 표시 시간” UI가 함께 동작하도록 수동 통합한다.
-6. 충돌 해결 뒤 sprite 재현성, 전체 pytest, preview, Windows 빌드와 실기기 업로드를 처음부터 다시 실행한다.
+1. UX refresh를 독립 commit으로 보존했다.
+2. PR #4의 `RefreshController`, flash 상태 영속화, timeout/logging을 통합했다.
+3. 새 설정 5초 기본값·기존 설정 보존, render hash의 hold 반영, account-only playlist, full-bar renderer와 asset pipeline을 유지했다.
+4. `i18n.py`와 `main_window.py`에서 장기 refresh 상태와 “계정당 표시 시간” UI가 함께 동작하도록 통합했다.
+5. 충돌 해결 뒤 sprite 재현성, 전체 pytest, preview, Windows 빌드를 다시 실행했다. 실제 LCD 업로드만 수동 QA로 남아 있다.
 
 `git checkout --ours <file>` 또는 `git checkout --theirs <file>`로 위 경로 전체를 일괄 해결하지 않는 것이 핵심이다.
 

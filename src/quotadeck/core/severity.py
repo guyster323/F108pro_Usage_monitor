@@ -16,6 +16,30 @@ _BANDS: list[tuple[float, Severity]] = [
 _HYSTERESIS = 3.0
 RESET_HOLD = timedelta(minutes=30)
 
+# Explicit display priority (worst first). Never rely on enum declaration order:
+# CRITICAL/EXHAUSTED must not be hidden behind HEALTHY, and errors/stale data
+# must stay visible when mixed with healthy accounts.
+SEVERITY_PRIORITY: list[Severity] = [
+    Severity.EXHAUSTED,
+    Severity.CRITICAL,
+    Severity.ERROR,
+    Severity.OFFLINE,
+    Severity.STALE,
+    Severity.CAUTION,
+    Severity.BUSY,
+    Severity.RESET,
+    Severity.HEALTHY,
+]
+
+
+def worst_severity(severities) -> Severity | None:
+    """Pick the most urgent severity using the explicit priority table."""
+    items = [s for s in severities if s is not None]
+    if not items:
+        return None
+    return min(items, key=lambda item: SEVERITY_PRIORITY.index(item) if item in SEVERITY_PRIORITY else len(SEVERITY_PRIORITY))
+
+
 def band_for_remaining(remaining: float | None) -> Severity:
     if remaining is None or isinstance(remaining, bool):
         return Severity.STALE
@@ -31,6 +55,7 @@ def band_for_remaining(remaining: float | None) -> Severity:
         if value >= floor:
             return band
     return Severity.EXHAUSTED
+
 
 def apply_hysteresis(previous: Severity | None, remaining: float | None) -> Severity:
     current = band_for_remaining(remaining)
@@ -52,6 +77,7 @@ def apply_hysteresis(previous: Severity | None, remaining: float | None) -> Seve
             return previous
     return current
 
+
 def _rank(severity: Severity) -> int:
     order = [
         Severity.EXHAUSTED,
@@ -64,6 +90,7 @@ def _rank(severity: Severity) -> int:
         return order.index(severity)
     except ValueError:
         return 3
+
 
 def detect_reset(previous: UsageSnapshot | None, current: UsageSnapshot) -> bool:
     if previous is None or current.status != "ok" or not previous.windows or not current.windows:
@@ -83,6 +110,7 @@ def detect_reset(previous: UsageSnapshot | None, current: UsageSnapshot) -> bool
                 reset_passed = True
     return jumped and (reset_passed or prev_min < 30.0)
 
+
 def snapshot_severity(
     snapshot: UsageSnapshot,
     previous_severity: Severity | None = None,
@@ -100,6 +128,7 @@ def snapshot_severity(
     if snapshot.status in {"error", "rate_limited"}:
         return Severity.ERROR
     return apply_hysteresis(previous_severity, snapshot.critical_remaining)
+
 
 def character_state(severity: Severity) -> CharacterState:
     mapping = {

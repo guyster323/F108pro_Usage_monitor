@@ -250,12 +250,14 @@ def validate_theme(path: Path) -> list[str]:
                                 f"{provider}/{state}: {name} needs transparent margins "
                                 "and opaque character pixels"
                             )
-                        if any(value not in {0, 255} for value in alpha.getdata()):
+                        alpha_values = alpha.tobytes()
+                        if any(value not in {0, 255} for value in alpha_values):
                             errors.append(f"{provider}/{state}: {name} alpha must be binary")
+                        rgba_values = rgba.tobytes()
                         opaque_colors = {
-                            (red, green, blue)
-                            for red, green, blue, alpha_value in rgba.getdata()
-                            if alpha_value == 255
+                            (rgba_values[index], rgba_values[index + 1], rgba_values[index + 2])
+                            for index in range(0, len(rgba_values), 4)
+                            if rgba_values[index + 3] == 255
                         }
                         if len(opaque_colors) > 48:
                             errors.append(

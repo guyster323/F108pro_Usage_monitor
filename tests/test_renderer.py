@@ -85,7 +85,7 @@ def test_static_character_states_use_a_brief_expression_pose() -> None:
     from quotadeck.renderer.scenes import _sprite_index
 
     assert [_sprite_index(i, 2, "idle") for i in range(8)] == [0, 0, 0, 1, 0, 0, 0, 0]
-    assert [_sprite_index(i, 2, "busy") for i in range(4)] == [0, 1, 0, 0]
+    assert [_sprite_index(i, 2, "busy", 4) for i in range(4)] == [0, 1, 0, 0]
     assert [_sprite_index(i, 2, "idle", 2) for i in range(2)] == [0, 1]
     assert [_sprite_index(i, 2, "idle", 3) for i in range(3)] == [0, 1, 0]
 

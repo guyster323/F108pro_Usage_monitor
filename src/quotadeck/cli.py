@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import math
 import sys
 from datetime import datetime, timezone
@@ -20,7 +19,9 @@ from quotadeck.renderer.encode import write_gif
 from quotadeck.renderer.sprites import validate_theme
 
 def _setup_logging() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    from quotadeck.core.logs import setup_logging
+
+    setup_logging(console=True)
 
 
 def _account_seconds(raw: str) -> float:

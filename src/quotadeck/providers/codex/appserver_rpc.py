@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,34 +18,70 @@ from quotadeck.providers.codex.auth import CodexAuth
 class CodexRPCError(RuntimeError):
     pass
 
-def _read_line(proc: subprocess.Popen[str], timeout: float) -> dict | None:
-    if proc.stdout is None:
-        return None
-    line = proc.stdout.readline()
-    if not line:
-        return None
-    line = line.strip()
-    if not line:
-        return _read_line(proc, timeout)
-    try:
-        return json.loads(line)
-    except json.JSONDecodeError:
-        return _read_line(proc, timeout)
 
-def _rpc(proc: subprocess.Popen[str], payload: dict, timeout: float) -> dict:
+class _StdoutReader:
+    """Reads child stdout on a daemon thread so RPC waits honour deadlines.
+
+    A blocking readline() on the caller's thread can wait forever if the child
+    stays alive without emitting a line; a queue with timeouts cannot.
+    """
+
+    _EOF = object()
+
+    def __init__(self, proc: subprocess.Popen[str]) -> None:
+        self._proc = proc
+        self._queue: queue.Queue[object] = queue.Queue()
+        self._thread = threading.Thread(target=self._pump, daemon=True)
+        self._thread.start()
+
+    def _pump(self) -> None:
+        stdout = self._proc.stdout
+        if stdout is not None:
+            try:
+                for line in stdout:
+                    self._queue.put(line)
+            except Exception:
+                pass
+        self._queue.put(self._EOF)
+
+    def read_message(self, deadline: float) -> dict | None:
+        """Next JSON message before the monotonic deadline; None on EOF."""
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise CodexRPCError("RPC timeout")
+            try:
+                item = self._queue.get(timeout=remaining)
+            except queue.Empty:
+                raise CodexRPCError("RPC timeout") from None
+            if item is self._EOF:
+                return None
+            line = str(item).strip()
+            if not line:
+                continue
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+    def close(self) -> None:
+        self._thread.join(timeout=1.0)
+
+
+def _rpc(reader: _StdoutReader, proc: subprocess.Popen[str], payload: dict, timeout: float) -> dict:
     assert proc.stdin is not None
     proc.stdin.write(json.dumps(payload) + "\n")
     proc.stdin.flush()
-    deadline = datetime.now(timezone.utc).timestamp() + timeout
-    while datetime.now(timezone.utc).timestamp() < deadline:
-        message = _read_line(proc, timeout)
+    deadline = time.monotonic() + timeout
+    while True:
+        message = reader.read_message(deadline)
         if message is None:
-            break
+            raise CodexRPCError("RPC stream closed")
         if payload.get("id") is not None and message.get("id") == payload.get("id"):
             if "error" in message:
                 raise CodexRPCError(str(message["error"]))
             return message.get("result") or {}
-    raise CodexRPCError("RPC timeout")
+
 
 def fetch_app_server(auth: CodexAuth) -> UsageSnapshot:
     exe = find_executable("codex")
@@ -62,8 +101,10 @@ def fetch_app_server(auth: CodexAuth) -> UsageSnapshot:
         env=env,
         creationflags=creation,
     )
+    reader = _StdoutReader(proc)
     try:
         _rpc(
+            reader,
             proc,
             {
                 "id": 1,
@@ -75,10 +116,10 @@ def fetch_app_server(auth: CodexAuth) -> UsageSnapshot:
         assert proc.stdin is not None
         proc.stdin.write(json.dumps({"method": "initialized", "params": {}}) + "\n")
         proc.stdin.flush()
-        limits = _rpc(proc, {"id": 2, "method": "account/rateLimits/read", "params": {}}, 3.0)
+        limits = _rpc(reader, proc, {"id": 2, "method": "account/rateLimits/read", "params": {}}, 3.0)
         account = {}
         try:
-            account = _rpc(proc, {"id": 3, "method": "account/read", "params": {}}, 3.0)
+            account = _rpc(reader, proc, {"id": 3, "method": "account/read", "params": {}}, 3.0)
         except CodexRPCError:
             account = {}
     finally:
@@ -92,6 +133,12 @@ def fetch_app_server(auth: CodexAuth) -> UsageSnapshot:
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             proc.kill()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+        reader.close()
+
     rate = limits.get("rateLimits") or limits.get("rate_limits") or limits
     windows: list[UsageWindow] = []
     for key, window_id, label in (

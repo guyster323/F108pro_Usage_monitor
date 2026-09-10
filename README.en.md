@@ -31,7 +31,7 @@ Discovery (CLI / App) → account picker → Providers → UsageSnapshot
                  ↘ PNG preview (settings app)
 ```
 
-The renderer never talks to hardware. `quotadeck render` works without a keyboard. The settings app picks accounts, language, and timings. Uploads rewrite the keyboard LCD SPI flash. Default: write at most every **10 minutes**. See **LCD flash life** below.
+The renderer never talks to hardware. `quotadeck render` works without a keyboard. The settings app picks accounts, language, and timings, then keeps polling while it is hidden in the tray. The CLI `quotadeck run` uses the same scheduler and flash-budget policy. Uploads rewrite the keyboard LCD SPI flash. Default: write at most every **10 minutes**. See **LCD flash life** below.
 ## Providers
 
 | Provider | Source | Credential | Status |
@@ -58,10 +58,10 @@ Original pixel art only. No official vendor mascots.
 
 ### Windows exe
 
-A release may provide `QuotaDeck.exe` for use without Python. This UX-refresh
-source handoff intentionally excludes an unverified binary: run from source
-below, or build a fresh exe from `QuotaDeck.spec` after validation on Windows.
-An older upstream exe does not contain these changes.
+This checkout includes `dist/QuotaDeck.exe`, rebuilt from the current source
+after the automated validation below, so it can run without Python. Physical
+F108 Pro LCD upload and brightness/viewing-angle checks still require manual
+hardware QA. Build again from `QuotaDeck.spec` when needed.
 
 1. Connect the F108 Pro over **USB-C** and press `Fn+4`.
 2. Close official AULA software.
@@ -83,6 +83,10 @@ In the settings app:
 - Checkboxes — only checked accounts rotate on the LCD. The alias is what the HUD shows.
 - **Preview** — remaining % and HUD without writing flash. Every account rotates for the configured time per account.
 - **Upload now** — write the selected accounts to the F108 Pro **user GIF slot**. Buttons lock while the transfer is running.
+
+The tray menu can open the app, refresh usage without writing flash, or upload now.
+With saved accounts, the background scheduler evaluates automatic uploads. Enable
+**Launch at Windows startup** to resume the app after boot.
 Default timings are **60 seconds / 5 seconds / 10 minutes**. They are not the same clock.
 
 | Setting | Default | What it does |
@@ -92,8 +96,8 @@ Default timings are **60 seconds / 5 seconds / 10 minutes**. They are not the sa
 | **Keyboard write** | 10 min | Minimum interval before rewriting onboard storage. |
 
 New settings, or settings without the field, default to 5 seconds. Upgrades
-preserve an existing `scene_hold_seconds` value from 2–20 seconds, so change an
-older 4 s/10 s value to 5 s once in the app if that is the cadence you want.
+preserve an existing `scene_hold_seconds` value from 2–20 seconds; change it in
+the app if you want to use the five-second cadence.
 ### CLI
 
 ```powershell
@@ -116,10 +120,9 @@ The default **minimum upload interval is 10 minutes**. At 16 hours/day that is 6
 | 60 min | ~16 | ~17 years |
 | 1 min | ~960 | ~3.4 months |
 
-The 100-write counter is process-local to one continuously running `quotadeck run`
-process and is not persisted. It is not a safety boundary across restarts or repeated
-settings-app **Upload now** actions; use the interval estimates above and do not repeat
-manual uploads in quick succession.
+The 100-write counter and last-write timestamp are shared by the settings app and
+`quotadeck run`, and persist across restarts. Use the interval estimates above and
+do not repeat manual uploads in quick succession.
 If the quantized usage snapshot does not change, QuotaDeck skips the upload, so real writes can be lower. The table is the upper bound if every interval writes.
 
 > **Warning: refreshing too often shortens the keyboard's onboard storage life.** Keep the 10-minute default. Repeated **Upload now** clicks also wear the same slot.

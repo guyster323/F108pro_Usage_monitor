@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QSystemTrayIcon
 
 from quotadeck.core.models import Severity
 
+
 def severity_icon(severity: Severity | None) -> QIcon:
     color = {
         Severity.HEALTHY: "#3DDC97",
@@ -26,18 +27,23 @@ def severity_icon(severity: Severity | None) -> QIcon:
     painter.end()
     return QIcon(pix)
 
-def attach_tray(window, runtime) -> QSystemTrayIcon:
+
+def attach_tray(window) -> QSystemTrayIcon:
     tray = QSystemTrayIcon(severity_icon(None), window)
     tray.setToolTip("QuotaDeck")
     from PySide6.QtWidgets import QMenu
+
     menu = QMenu()
     show = QAction("QuotaDeck 열기", window)
     show.triggered.connect(window.show)
+    refresh = QAction("지금 사용량 조회", window)
+    refresh.triggered.connect(window.refresh_from_tray)
     upload = QAction("지금 키보드에 올리기", window)
     upload.triggered.connect(window.upload_now)
     quit_action = QAction("종료", window)
     quit_action.triggered.connect(window.close_app)
     menu.addAction(show)
+    menu.addAction(refresh)
     menu.addAction(upload)
     menu.addSeparator()
     menu.addAction(quit_action)
@@ -45,6 +51,7 @@ def attach_tray(window, runtime) -> QSystemTrayIcon:
     tray.activated.connect(lambda reason: window.show() if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
     tray.show()
     window.tray_show = show
+    window.tray_refresh = refresh
     window.tray_upload = upload
     window.tray_quit = quit_action
     return tray
