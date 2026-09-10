@@ -6,14 +6,24 @@ import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from quotadeck.core.flashbudget import DEFAULT_FLASH_INTERVAL_MINUTES
 from quotadeck.core.models import AccountRef, DisplayMode
 from quotadeck.devices.aula_f108.constants import LCD_DEFAULT_BUDGET, LCD_SOFT_CAP
 
 log = logging.getLogger("quotadeck")
 
-CONFIG_VERSION = 3
+CONFIG_VERSION = 4
 DEFAULT_SCENE_HOLD_SECONDS = 5
+DEFAULT_MIN_UPLOAD_MINUTES = DEFAULT_FLASH_INTERVAL_MINUTES
 LEGACY_DEFAULT_FRAME_BUDGET = 32
+LEGACY_DEFAULT_MIN_UPLOAD_MINUTES = 10
+
+POLL_SECONDS_MIN = 15
+POLL_SECONDS_MAX = 3600
+SCENE_HOLD_SECONDS_MIN = 2
+SCENE_HOLD_SECONDS_MAX = 20
+MIN_UPLOAD_MINUTES_MIN = 1
+MIN_UPLOAD_MINUTES_MAX = 720
 
 
 def app_dir() -> Path:
@@ -60,7 +70,7 @@ class AppConfig:
     theme: str = "quotadeck-crew"
     poll_seconds: int = 60
     scene_hold_seconds: int = DEFAULT_SCENE_HOLD_SECONDS
-    min_upload_minutes: int = 10
+    min_upload_minutes: int = DEFAULT_MIN_UPLOAD_MINUTES
     ui_language: str = "ko"
     max_age_minutes: int = 60
     daily_flash_limit: int = 100
@@ -104,7 +114,7 @@ def _hold_seconds(raw: dict) -> int:
         value = DEFAULT_SCENE_HOLD_SECONDS
     # A value present in a legacy file is an explicit user choice. Preserve it
     # while constraining it to the firmware-compatible UI range.
-    return max(2, min(20, value))
+    return max(SCENE_HOLD_SECONDS_MIN, min(SCENE_HOLD_SECONDS_MAX, value))
 
 
 def _clamp_int(value: object, lo: int, hi: int, fallback: int) -> int:
@@ -129,6 +139,23 @@ def _frame_budget(raw: dict) -> int:
         version = 1
     if version < CONFIG_VERSION and value == LEGACY_DEFAULT_FRAME_BUDGET:
         return LCD_DEFAULT_BUDGET
+    return value
+
+
+def _min_upload_minutes(raw: dict) -> int:
+    """Load the flash interval and migrate the old 10-minute default."""
+    value = _clamp_int(
+        raw.get("min_upload_minutes", DEFAULT_MIN_UPLOAD_MINUTES),
+        MIN_UPLOAD_MINUTES_MIN,
+        MIN_UPLOAD_MINUTES_MAX,
+        DEFAULT_MIN_UPLOAD_MINUTES,
+    )
+    try:
+        version = int(raw.get("config_version", 1))
+    except (TypeError, ValueError, OverflowError):
+        version = 1
+    if version < CONFIG_VERSION and value == LEGACY_DEFAULT_MIN_UPLOAD_MINUTES:
+        return DEFAULT_MIN_UPLOAD_MINUTES
     return value
 
 
@@ -170,9 +197,11 @@ def load_config(path: Path | None = None) -> AppConfig:
             accounts=accounts,
             display_mode=mode,
             theme=str(raw.get("theme") or "quotadeck-crew"),
-            poll_seconds=_clamp_int(raw.get("poll_seconds", 60), 15, 3600, 60),
+            poll_seconds=_clamp_int(
+                raw.get("poll_seconds", 60), POLL_SECONDS_MIN, POLL_SECONDS_MAX, 60
+            ),
             scene_hold_seconds=_hold_seconds(raw),
-            min_upload_minutes=_clamp_int(raw.get("min_upload_minutes", 10), 1, 720, 10),
+            min_upload_minutes=_min_upload_minutes(raw),
             max_age_minutes=_clamp_int(raw.get("max_age_minutes", 60), 1, 1440, 60),
             daily_flash_limit=_clamp_int(raw.get("daily_flash_limit", 100), 1, 1000, 100),
             frame_budget=_frame_budget(raw),

@@ -7,11 +7,12 @@ from datetime import date, datetime, timedelta, timezone
 # F108 Pro does not publish the LCD flash rating; treat this as an estimate.
 TYPICAL_SPI_NOR_CYCLES = 100_000
 ACTIVE_HOURS_PER_DAY = 16
+DEFAULT_FLASH_INTERVAL_MINUTES = 30
 
 
 @dataclass
 class FlashBudget:
-    min_interval: timedelta = timedelta(minutes=10)
+    min_interval: timedelta = timedelta(minutes=DEFAULT_FLASH_INTERVAL_MINUTES)
     max_age: timedelta = timedelta(minutes=60)
     daily_limit: int = 100
     last_upload: datetime | None = None

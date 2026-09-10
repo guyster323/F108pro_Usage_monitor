@@ -51,12 +51,12 @@ def test_select_accounts_empty_when_all_disabled() -> None:
     assert select_accounts(discovered, config) == []
 
 
-def test_config_defaults_are_sixty_five_ten() -> None:
+def test_config_defaults_are_sixty_five_thirty() -> None:
     from quotadeck.config import AppConfig, _hold_seconds
     config = AppConfig()
     assert config.poll_seconds == 60
     assert config.scene_hold_seconds == 5
-    assert config.min_upload_minutes == 10
+    assert config.min_upload_minutes == 30
     assert _hold_seconds({}) == 5
     assert _hold_seconds({"scene_hold_seconds": 4}) == 4
     assert _hold_seconds({"scene_hold_seconds": 10}) == 10
@@ -71,7 +71,7 @@ def test_custom_hold_survives_save_load(tmp_path) -> None:
     save_config(AppConfig(scene_hold_seconds=7), path)
     loaded = load_config(path)
     assert loaded.scene_hold_seconds == 7
-    assert loaded.config_version == 3
+    assert loaded.config_version == 4
 
 
 def test_save_always_stamps_current_config_version(tmp_path) -> None:

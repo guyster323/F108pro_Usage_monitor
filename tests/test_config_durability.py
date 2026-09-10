@@ -85,4 +85,22 @@ def test_legacy_default_frame_budget_is_migrated(tmp_path: Path) -> None:
     )
     config = load_config(target)
     assert config.frame_budget == 48
-    assert config.config_version == 3
+    assert config.config_version == 4
+
+
+def test_legacy_flash_default_is_migrated(tmp_path: Path) -> None:
+    target = tmp_path / "config.json"
+    target.write_text(
+        json.dumps({"config_version": 3, "min_upload_minutes": 10}),
+        encoding="utf-8",
+    )
+    config = load_config(target)
+    assert config.min_upload_minutes == 30
+    assert config.config_version == 4
+
+
+def test_explicit_flash_interval_survives_current_save_load(tmp_path: Path) -> None:
+    target = tmp_path / "config.json"
+    save_config(AppConfig(min_upload_minutes=10), target)
+    loaded = load_config(target)
+    assert loaded.min_upload_minutes == 10

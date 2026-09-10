@@ -31,7 +31,7 @@ Discovery (CLI / App) → account picker → Providers → UsageSnapshot
                  ↘ PNG preview (settings app)
 ```
 
-The renderer never talks to hardware. `quotadeck render` works without a keyboard. The settings app picks accounts, language, and timings, then keeps polling while it is hidden in the tray. The CLI `quotadeck run` uses the same scheduler and flash-budget policy. Uploads rewrite the keyboard LCD SPI flash. Default: write at most every **10 minutes**. See **LCD flash life** below.
+The renderer never talks to hardware. `quotadeck render` works without a keyboard. The settings app picks accounts, language, and timings, then keeps polling while it is hidden in the tray. The CLI `quotadeck run` uses the same scheduler and flash-budget policy. Uploads rewrite the keyboard LCD SPI flash. Default: write at most every **30 minutes**. See **LCD flash life** below.
 ## Providers
 
 | Provider | Source | Credential | Status |
@@ -87,7 +87,7 @@ In the settings app:
 The tray menu can open the app, refresh usage without writing flash, or upload now.
 With saved accounts, the background scheduler evaluates automatic uploads. Enable
 **Launch at Windows startup** to resume the app after boot.
-Default timings are **60 seconds / 5 seconds / 10 minutes**. They are not the same clock.
+Default timings are **60 seconds / 5 seconds / 30 minutes**. They are not the same clock.
 
 The F108 Pro delay byte is measured in 2 ms ticks. QuotaDeck expands a 5-second
 account slot into ten 500 ms frames, so the saved GUI value matches the time
@@ -97,11 +97,13 @@ played by the keyboard. Existing settings files are migrated automatically.
 | --- | --- | --- |
 | **Usage poll** | 60 s | How often this PC re-reads APIs. Does not write keyboard flash. |
 | **Time per account** | 5 s | Total full-screen time, including character animation. Configurable in the app. |
-| **Keyboard write** | 10 min | Minimum interval before rewriting onboard storage. |
+| **Flash interval** | 30 min | Minimum interval before rewriting onboard storage. |
 
-New settings, or settings without the field, default to 5 seconds. Upgrades
-preserve an existing `scene_hold_seconds` value from 2–20 seconds; change it in
-the app if you want to use the five-second cadence.
+All three timing fields accept direct keyboard input. Save, preview, and upload
+show a popup and stop if the value is not an integer in its allowed range:
+usage poll 15–3,600 seconds, time per account 2–20 seconds, and flash interval
+1–720 minutes. New settings use 5 seconds and 30 minutes. Upgrades preserve
+existing choices and migrate the old 10-minute default to 30 minutes.
 ### CLI
 
 ```powershell
@@ -116,12 +118,12 @@ the app if you want to use the five-second cadence.
 
 Each keyboard upload erases and rewrites the LCD GIF slot on SPI flash. Consumer SPI NOR is typically rated around **100,000** program/erase cycles. AULA does not publish the F108 Pro chip rating, so the numbers below are estimates against that common rating.
 
-The default **minimum upload interval is 10 minutes**. At 16 hours/day that is 6 writes/hour, **about 96 writes/day**.
+The default **flash interval is 30 minutes**. At 16 hours/day that is 2 writes/hour, **about 32 writes/day**.
 | Minimum interval | Writes / day (16h) | Life at 100k cycles |
 | --- | --- | --- |
-| **10 min (default)** | ~96 | **~2.9 years** |
-| 30 min | ~32 | ~8.6 years |
+| **30 min (default)** | ~32 | **~8.6 years** |
 | 60 min | ~16 | ~17 years |
+| 10 min | ~96 | ~2.9 years |
 | 1 min | ~960 | ~3.4 months |
 
 The 100-write counter and last-write timestamp are shared by the settings app and
@@ -129,14 +131,14 @@ The 100-write counter and last-write timestamp are shared by the settings app an
 do not repeat manual uploads in quick succession.
 If the quantized usage snapshot does not change, QuotaDeck skips the upload, so real writes can be lower. The table is the upper bound if every interval writes.
 
-> **Warning: refreshing too often shortens the keyboard's onboard storage life.** Keep the 10-minute default. Repeated **Upload now** clicks also wear the same slot.
+> **Warning: refreshing too often shortens the keyboard's onboard storage life.** Keep the 30-minute default. Repeated **Upload now** clicks also wear the same slot.
 ## Rules
 
 - Never copy tokens into the repo or `config.json`.
 - Never upload more than 141 frames. The firmware does not enforce the slot; overflow corrupts menu graphics.
 - Write the user GIF slot (`image_number = 1`). Slot 0 is the factory GIF.
 - USB-C wired mode only (`Fn+4`).
-- Do not write flash faster than needed. The default is 10 minutes. Faster intervals reduce lifespan.
+- Do not write flash faster than needed. The default is 30 minutes. Faster intervals reduce lifespan.
 ## More
 
 [UX refresh and code review](docs/UX_REFRESH_REVIEW.md) · [Architecture](docs/ARCHITECTURE.md) · [Providers](docs/PROVIDERS.md) · [Security](docs/SECURITY.md) · [F108 protocol](docs/F108_PROTOCOL.md) · [Themes](docs/THEMES.md)

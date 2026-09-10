@@ -101,6 +101,7 @@ def _snapshots() -> list[UsageSnapshot]:
 
 def _check_config() -> None:
     assert AppConfig().scene_hold_seconds == 5
+    assert AppConfig().min_upload_minutes == 30
     assert _hold_seconds({}) == 5
     assert _hold_seconds({"scene_hold_seconds": 4}) == 4
     assert _hold_seconds({"scene_hold_seconds": 10}) == 10

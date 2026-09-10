@@ -3,6 +3,11 @@ from datetime import timedelta
 from quotadeck.core.flashbudget import FlashBudget
 
 
+def test_default_flash_interval_matches_app_default() -> None:
+    budget = FlashBudget()
+    assert budget.min_interval == timedelta(minutes=30)
+
+
 def test_ten_minute_interval_matches_readme() -> None:
     budget = FlashBudget(min_interval=timedelta(minutes=10))
     assert budget.estimated_daily_writes() == 96

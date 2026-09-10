@@ -49,7 +49,7 @@
 |---|---:|---|
 | `poll_seconds` | 60초 | provider quota를 다시 조회하는 주기 |
 | `scene_hold_seconds` | 5초 | 선택된 계정 하나가 LCD 전체를 점유하는 시간 |
-| `min_upload_minutes` | 10분 | 키보드 플래시 쓰기 간 최소 간격 |
+| `min_upload_minutes` | 30분 | 키보드 Flash 주기, 플래시 쓰기 간 최소 간격 |
 
 기본 5초 계약은 다음 순서로 만들어진다.
 
@@ -66,7 +66,7 @@
 
 따라서 빈 계정 예외 화면을 제외하면 한 playlist의 총 재생 시간은 `선택 계정 수 × 계정별 hold`다. FIXED는 사용자 순서를 유지하고 SMART는 severity 순으로 안정 정렬하지만, 두 모드 모두 각 계정을 한 번만 표시한다.
 
-설정 파일은 `config_version = 3`다. 새 설정 또는 필드가 없는 설정에는 5초를 적용한다. 구버전 JSON에 이미 `scene_hold_seconds`가 있으면 과거 기본값과 사용자의 명시적 선택을 구분할 수 없으므로 2~20초 범위의 4초·10초 같은 명시값은 보존하고 범위 밖 값은 clamp한다. 이전 버전의 기본 frame budget 32는 2ms tick에서 네 계정의 5초 슬롯을 담을 수 없어 48로 자동 승격한다. 저장할 때는 항상 현재 config version을 기록한다. GUI는 2~20초 범위이며, `quotadeck render --hold-seconds`도 유한한 2~20초 값과 정확한 2ms 단위만 허용한다.
+설정 파일은 `config_version = 4`다. 새 설정 또는 필드가 없는 설정에는 5초와 30분을 적용한다. 구버전 JSON에 이미 `scene_hold_seconds`가 있으면 과거 기본값과 사용자의 명시적 선택을 구분할 수 없으므로 2~20초 범위의 4초·10초 같은 명시값은 보존하고 범위 밖 값은 clamp한다. 이전 버전의 기본 frame budget 32는 2ms tick에서 네 계정의 5초 슬롯을 담을 수 없어 48로 자동 승격한다. 이전 버전의 Flash 기본값 10분은 30분으로 자동 승격한다. 저장할 때는 항상 현재 config version을 기록한다. GUI의 입력 범위는 사용량 조회 15~3,600초, 계정당 표시 시간 2~20초, Flash 주기 1~720분이며, 범위를 벗어나거나 정수가 아니면 저장·미리보기·업로드 전에 팝업으로 안내한다. `quotadeck render --hold-seconds`도 유한한 2~20초 값과 정확한 2ms 단위만 허용한다.
 
 ## Split-text Quota bar
 

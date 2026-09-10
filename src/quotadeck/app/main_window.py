@@ -27,7 +27,19 @@ from quotadeck.app.refresh_controller import RefreshController
 from quotadeck.app.startup import set_launch_at_startup
 from quotadeck.app.stepper import Stepper
 from quotadeck.app.tray import attach_tray, severity_icon
-from quotadeck.config import AccountConfig, AppConfig, account_config_from_ref, load_config, save_config
+from quotadeck.config import (
+    AccountConfig,
+    AppConfig,
+    MIN_UPLOAD_MINUTES_MAX,
+    MIN_UPLOAD_MINUTES_MIN,
+    POLL_SECONDS_MAX,
+    POLL_SECONDS_MIN,
+    SCENE_HOLD_SECONDS_MAX,
+    SCENE_HOLD_SECONDS_MIN,
+    account_config_from_ref,
+    load_config,
+    save_config,
+)
 from quotadeck.core.flashbudget import FlashBudget
 from quotadeck.core.models import DisplayMode, UsageSnapshot
 from quotadeck.core.scheduler import QuotaDeckRuntime, UploadResult
@@ -158,10 +170,22 @@ class MainWindow(QMainWindow):
 
         form = QFormLayout()
         self.mode = QComboBox()
-        self.poll = Stepper(minimum=15, maximum=600, value=self.config.poll_seconds)
+        self.poll = Stepper(
+            minimum=POLL_SECONDS_MIN,
+            maximum=POLL_SECONDS_MAX,
+            value=self.config.poll_seconds,
+        )
         self.poll.setToolTip("")
-        self.hold = Stepper(minimum=2, maximum=20, value=self.config.scene_hold_seconds)
-        self.min_up = Stepper(minimum=1, maximum=120, value=self.config.min_upload_minutes)
+        self.hold = Stepper(
+            minimum=SCENE_HOLD_SECONDS_MIN,
+            maximum=SCENE_HOLD_SECONDS_MAX,
+            value=self.config.scene_hold_seconds,
+        )
+        self.min_up = Stepper(
+            minimum=MIN_UPLOAD_MINUTES_MIN,
+            maximum=MIN_UPLOAD_MINUTES_MAX,
+            value=self.config.min_upload_minutes,
+        )
         self.min_up.valueChanged.connect(self.update_flash_label)
         self.poll.valueChanged.connect(self.update_flash_label)
         self.startup = QCheckBox()
@@ -353,18 +377,47 @@ class MainWindow(QMainWindow):
         self.status.setText(self._t("status_found", count=len(found)))
         self.refresh_preview()
 
-    def apply(self) -> None:
+    def _validate_timing_inputs(self) -> bool:
+        fields = (
+            (self.poll, "poll", "suffix_sec"),
+            (self.hold, "hold", "suffix_sec"),
+            (self.min_up, "min_upload", "suffix_min"),
+        )
+        for control, label_key, suffix_key in fields:
+            if control.commit():
+                continue
+            control.display.setFocus()
+            control.display.selectAll()
+            QMessageBox.warning(
+                self,
+                self._t("validation_title"),
+                self._t(
+                    "invalid_timing",
+                    field=self._t(label_key),
+                    minimum=control.minimum(),
+                    maximum=control.maximum(),
+                    unit=self._t(suffix_key).strip(),
+                ),
+            )
+            return False
+        return True
+
+    def apply(self) -> bool:
         # Save settings and hand them to the long-lived runtime; never rebuild
         # the runtime, so flash budget and upload history are preserved.
+        if not self._validate_timing_inputs():
+            return False
         self.config = self.collect_config()
         save_config(self.config)
         set_launch_at_startup(self.config.launch_at_startup)
         self.controller.update_config(self.config)
         self.update_flash_label()
         self.status.setText(self._t("status_saved"))
+        return True
 
     def refresh_preview(self) -> None:
-        self.apply()
+        if not self.apply():
+            return
         self.status.setText(self._t("status_reading"))
         self.controller.request_refresh()
 
@@ -374,7 +427,8 @@ class MainWindow(QMainWindow):
         self.controller.request_refresh()
 
     def upload_now(self) -> None:
-        self.apply()
+        if not self.apply():
+            return
         self.update_keyboard_status()
         interfaces = enumerate_interfaces()
         if not wired_mode_ok(interfaces):
