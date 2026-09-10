@@ -34,6 +34,7 @@ def aula_software_running() -> list[str]:
         raw = subprocess.check_output(
             ["tasklist", "/FO", "CSV", "/NH"],
             text=True,
+            timeout=5,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except Exception:

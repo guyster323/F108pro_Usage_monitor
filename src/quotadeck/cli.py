@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +20,9 @@ from quotadeck.renderer.sprites import validate_theme
 
 
 def _setup_logging() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    from quotadeck.core.logs import setup_logging
+
+    setup_logging(console=True)
 
 
 def cmd_probe(_args: argparse.Namespace) -> int:

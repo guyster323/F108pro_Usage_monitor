@@ -15,6 +15,29 @@ _BANDS: list[tuple[float, Severity]] = [
 _HYSTERESIS = 3.0
 RESET_HOLD = timedelta(minutes=30)
 
+# Explicit display priority (worst first). Never rely on enum declaration order:
+# CRITICAL/EXHAUSTED must not be hidden behind HEALTHY, and errors/stale data
+# must stay visible when mixed with healthy accounts.
+SEVERITY_PRIORITY: list[Severity] = [
+    Severity.EXHAUSTED,
+    Severity.CRITICAL,
+    Severity.ERROR,
+    Severity.OFFLINE,
+    Severity.STALE,
+    Severity.CAUTION,
+    Severity.BUSY,
+    Severity.RESET,
+    Severity.HEALTHY,
+]
+
+
+def worst_severity(severities) -> Severity | None:
+    """Pick the most urgent severity using the explicit priority table."""
+    items = [s for s in severities if s is not None]
+    if not items:
+        return None
+    return min(items, key=lambda item: SEVERITY_PRIORITY.index(item) if item in SEVERITY_PRIORITY else len(SEVERITY_PRIORITY))
+
 
 def band_for_remaining(remaining: float | None) -> Severity:
     if remaining is None:
