@@ -26,7 +26,7 @@ jobs:
       - name: Dependency-light UX acceptance
         run: python tools/verify_refresh.py
       - name: Test
-        run: pytest -q
+        run: python -m pytest -q
       - name: Preview artifacts
         run: |
           python tools/export_crew.py
