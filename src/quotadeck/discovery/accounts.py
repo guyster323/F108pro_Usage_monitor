@@ -1,17 +1,31 @@
 from __future__ import annotations
 
+import logging
+
 from quotadeck.config import AppConfig
 from quotadeck.core.models import AccountRef
 from quotadeck.discovery.sources import annotate_source
 from quotadeck.providers.base import all_providers
 
+log = logging.getLogger("quotadeck.discovery")
+
 
 def discover_accounts() -> list[AccountRef]:
     accounts: list[AccountRef] = []
     for provider in all_providers():
-        accounts.extend(provider.discover())
+        try:
+            found = provider.discover()
+            accounts.extend(found)
+            log.info("event=provider_discovery provider=%s accounts=%d", provider.id, len(found))
+        except Exception:
+            # A damaged login database for one provider must not take down the
+            # entire tray application. The traceback remains in diagnostics.
+            log.exception("event=provider_discovery_failed provider=%s", provider.id)
     for account in accounts:
-        annotate_source(account)
+        try:
+            annotate_source(account)
+        except Exception:
+            log.exception("event=source_annotation_failed provider=%s", account.provider)
     return accounts
 
 def select_accounts(discovered: list[AccountRef], config: AppConfig) -> list[AccountRef]:

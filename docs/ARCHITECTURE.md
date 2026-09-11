@@ -20,13 +20,13 @@ There is no provider grouping, transition card, reset card or final summary.
 
 `scene_hold_seconds` means total time per account, including every animation
 pose. The default is 5 seconds. `renderer.budget.allocate()` converts this to
-2 ms firmware ticks, gives each account the same frame count and exact tick
+20 ms firmware ticks, gives each account the same frame count and exact tick
 sum, and rejects impossible budgets before rendering. No final slice may
 silently remove later accounts. The constraints are:
 
-- soft budget: 48 frames (normal default: 48)
+- soft budget: 48 frames (normal default: 32)
 - absolute device limit: 141 frames
-- frame delay: 2–510 ms
+- frame delay: 20–5,100 ms
 - frame dimensions: exactly 240×135
 - payload pixel data: RGB565, 64,800 bytes per frame
 
@@ -44,5 +44,5 @@ source sheets and their deterministic compiler are documented in
 [THEMES.md](THEMES.md).
 
 See [UX_REFRESH_REVIEW.md](UX_REFRESH_REVIEW.md),
-[F108_PROTOCOL.md](F108_PROTOCOL.md), [PROVIDERS.md](PROVIDERS.md), and
-[SECURITY.md](SECURITY.md).
+[F108_PROTOCOL.md](F108_PROTOCOL.md), [PROVIDERS.md](PROVIDERS.md),
+[COLLECTORS.md](COLLECTORS.md), and [SECURITY.md](SECURITY.md).

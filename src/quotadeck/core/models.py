@@ -34,6 +34,13 @@ class DisplayMode(str, Enum):
     SMART = "smart"
 
 
+class MetricMode(str, Enum):
+    """The information shown on the LCD, independent of account ordering."""
+
+    QUOTA = "quota"
+    CUMULATIVE = "cumulative"
+
+
 SnapshotStatus = Literal["ok", "stale", "offline", "error", "rate_limited"]
 
 @dataclass(slots=True)

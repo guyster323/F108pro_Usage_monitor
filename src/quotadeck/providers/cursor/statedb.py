@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from quotadeck.providers.jwtutil import decode_payload
 
+MAX_CURSOR_AUTH_JSON_BYTES = 1024 * 1024
+MAX_CURSOR_STATE_DB_BYTES = 256 * 1024 * 1024
+
 
 @dataclass
 class CursorAuth:
-    access_token: str
+    access_token: str = field(repr=False)
     email: str | None
     plan: str | None
     user_id: str
@@ -46,9 +50,11 @@ def read_ide_auth() -> CursorAuth | None:
         return None
     tmp_path = None
     try:
+        if db_path.stat().st_size > MAX_CURSOR_STATE_DB_BYTES:
+            return None
         with tempfile.NamedTemporaryFile(prefix="quotadeck-vscdb-", suffix=".vscdb", delete=False) as tmp:
             tmp_path = Path(tmp.name)
-        tmp_path.write_bytes(db_path.read_bytes())
+        shutil.copyfile(db_path, tmp_path)
         conn = sqlite3.connect(f"file:{tmp_path.as_posix()}?mode=ro", uri=True)
         try:
             cur = conn.cursor()
@@ -74,7 +80,7 @@ def read_ide_auth() -> CursorAuth | None:
             )
         finally:
             conn.close()
-    except OSError:
+    except (OSError, sqlite3.Error):
         return None
     finally:
         if tmp_path and tmp_path.exists():
@@ -88,11 +94,15 @@ def read_cli_auth() -> CursorAuth | None:
     if not path.is_file():
         return None
     try:
+        if path.stat().st_size > MAX_CURSOR_AUTH_JSON_BYTES:
+            return None
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
+        return None
+    if not isinstance(raw, dict):
         return None
     token = raw.get("accessToken") or raw.get("access_token")
-    if not token:
+    if not isinstance(token, str) or not token.strip():
         return None
     return CursorAuth(
         access_token=token,

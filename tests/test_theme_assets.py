@@ -2,24 +2,32 @@ from __future__ import annotations
 
 import json
 import shutil
+import tomllib
 from pathlib import Path
 
 import pytest
 from PIL import Image, ImageDraw, __version__ as PILLOW_VERSION
 
+import quotadeck.config as config_module
+from quotadeck.config import bundled_theme_dir, default_theme_dir
 from quotadeck.renderer.sprites import REQUIRED_STATES, ThemeError, load_theme, validate_theme
 from tools.gen_sprites import (
+    DEFAULT_BUNDLED_THEME,
+    _byte_files,
     _compile_cell,
     _primary_alpha_box,
     _semantic_image,
     _validate_output_paths,
     compile_theme,
+    sync_bundled_theme,
 )
 from tools.extract_checker_alpha import CheckerExtractionError, extract
 
 ROOT = Path(__file__).resolve().parents[1]
 THEME = ROOT / "themes" / "quotadeck-crew"
 SOURCE = ROOT / "artwork" / "sprite_sources"
+USAGE_SOURCE = ROOT / "artwork" / "usage_sprite_sources"
+BUNDLED_THEME = ROOT / "src" / "quotadeck" / "bundled" / "themes" / "quotadeck-crew"
 
 
 def test_generated_theme_contract() -> None:
@@ -36,7 +44,7 @@ def test_generated_theme_contract() -> None:
                     assert image.mode == "RGBA"
                     assert image.size == theme.sprite_size
                     alpha = image.getchannel("A")
-                    assert set(alpha.tobytes()) <= {0, 255}
+                    assert set(alpha.getdata()) <= {0, 255}
                     assert alpha.getbbox()[3] == theme.sprite_size[1] - 2
 
 
@@ -47,6 +55,61 @@ def test_theme_records_reproducible_asset_pipeline() -> None:
     assert meta["asset_pipeline"]["pillow"] == PILLOW_VERSION
     for provider in ("codex", "claude", "cursor", "grok"):
         assert (ROOT / "artwork" / "sprite_sources" / f"{provider}.png").is_file()
+        assert (ROOT / "artwork" / "usage_sprite_sources" / f"{provider}.png").is_file()
+
+
+def test_bundled_package_theme_matches_canonical_theme_exactly() -> None:
+    assert BUNDLED_THEME == DEFAULT_BUNDLED_THEME
+    assert validate_theme(BUNDLED_THEME) == []
+    assert _byte_files(BUNDLED_THEME) == _byte_files(THEME)
+    assert bundled_theme_dir() == BUNDLED_THEME
+    assert default_theme_dir() == THEME
+
+
+def test_wheel_uses_package_data_instead_of_install_scheme_data_files() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    setuptools = project["tool"]["setuptools"]
+    assert "data-files" not in setuptools
+    patterns = setuptools["package-data"]["quotadeck"]
+    assert "bundled/themes/quotadeck-crew/theme.json" in patterns
+    assert "bundled/icons/*.png" in patterns
+    for provider in ("codex", "claude", "cursor", "grok"):
+        assert (
+            f"bundled/themes/quotadeck-crew/provider/{provider}/*.png" in patterns
+        )
+
+
+def test_installed_layout_resolves_theme_beside_package(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    package = tmp_path / "target" / "quotadeck"
+    fake_config = package / "config.py"
+    fake_config.parent.mkdir(parents=True)
+    fake_config.touch()
+    installed_theme = package / "bundled" / "themes" / "quotadeck-crew"
+    installed_theme.mkdir(parents=True)
+
+    monkeypatch.setattr(config_module, "__file__", str(fake_config))
+
+    assert config_module.bundled_theme_dir() == installed_theme
+    assert config_module.default_theme_dir() == installed_theme
+
+
+def test_bundled_theme_sync_is_exact_and_refuses_unmanaged_target(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "package" / "bundled" / "themes" / "quotadeck-crew"
+    sync_bundled_theme(THEME, target)
+    assert validate_theme(target) == []
+    assert _byte_files(target) == _byte_files(THEME)
+
+    unmanaged = tmp_path / "unmanaged"
+    unmanaged.mkdir()
+    (unmanaged / "keep.txt").write_text("mine", encoding="utf-8")
+    with pytest.raises(ValueError, match="unmanaged bundled theme"):
+        sync_bundled_theme(THEME, unmanaged)
+    assert (unmanaged / "keep.txt").read_text(encoding="utf-8") == "mine"
 
 
 def test_source_and_output_paths_must_not_overlap(tmp_path: Path) -> None:
@@ -54,6 +117,21 @@ def test_source_and_output_paths_must_not_overlap(tmp_path: Path) -> None:
         compile_theme(SOURCE, SOURCE)
     with pytest.raises(ValueError, match="preview must not be inside"):
         _validate_output_paths(SOURCE, tmp_path / "theme", SOURCE / "codex.png")
+    with pytest.raises(ValueError, match="bundled theme directories must not overlap"):
+        _validate_output_paths(
+            SOURCE,
+            tmp_path / "theme",
+            tmp_path / "preview.png",
+            bundled_theme_dir=SOURCE / "bundled",
+        )
+    with pytest.raises(ValueError, match="generated and bundled.*must not overlap"):
+        _validate_output_paths(
+            SOURCE,
+            tmp_path / "theme",
+            tmp_path / "preview.png",
+            usage_source_dir=USAGE_SOURCE,
+            bundled_theme_dir=tmp_path / "theme",
+        )
 
 
 def test_checker_recovery_refuses_to_destroy_existing_alpha(tmp_path: Path) -> None:

@@ -11,6 +11,22 @@ from quotadeck.providers.claude.credentials import ClaudeAuth
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 
+
+def _parse_reset_at(value: object) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        # Anthropic normally includes an offset, but some valid usage
+        # responses omit it. Their reset clock is UTC; never leak a naive
+        # datetime into the cross-provider snapshot boundary.
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except (OSError, OverflowError, TypeError, ValueError):
+        return None
+
+
 def parse_usage(data: dict, auth: ClaudeAuth, email_local: str = "CLAUDE") -> UsageSnapshot:
     windows: list[UsageWindow] = []
     mapping = (
@@ -25,12 +41,7 @@ def parse_usage(data: dict, auth: ClaudeAuth, email_local: str = "CLAUDE") -> Us
             continue
         used = float(raw.get("utilization") or 0)
         reset = raw.get("resets_at")
-        resets_at = None
-        if reset:
-            try:
-                resets_at = datetime.fromisoformat(str(reset).replace("Z", "+00:00"))
-            except ValueError:
-                resets_at = None
+        resets_at = _parse_reset_at(reset)
         windows.append(
             UsageWindow(
                 id=window_id,

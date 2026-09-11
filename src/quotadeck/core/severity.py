@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from math import isfinite
+from typing import Iterable
 
 from quotadeck.core.models import CharacterState, Severity, UsageSnapshot
 
@@ -16,29 +17,23 @@ _BANDS: list[tuple[float, Severity]] = [
 _HYSTERESIS = 3.0
 RESET_HOLD = timedelta(minutes=30)
 
-# Explicit display priority (worst first). Never rely on enum declaration order:
-# CRITICAL/EXHAUSTED must not be hidden behind HEALTHY, and errors/stale data
-# must stay visible when mixed with healthy accounts.
-SEVERITY_PRIORITY: list[Severity] = [
-    Severity.EXHAUSTED,
-    Severity.CRITICAL,
-    Severity.ERROR,
-    Severity.OFFLINE,
-    Severity.STALE,
-    Severity.CAUTION,
-    Severity.BUSY,
-    Severity.RESET,
-    Severity.HEALTHY,
-]
+_DISPLAY_PRIORITY = {
+    Severity.EXHAUSTED: 0,
+    Severity.CRITICAL: 1,
+    Severity.ERROR: 2,
+    Severity.CAUTION: 3,
+    Severity.OFFLINE: 4,
+    Severity.STALE: 5,
+    Severity.RESET: 6,
+    Severity.BUSY: 7,
+    Severity.HEALTHY: 8,
+}
 
 
-def worst_severity(severities) -> Severity | None:
-    """Pick the most urgent severity using the explicit priority table."""
-    items = [s for s in severities if s is not None]
-    if not items:
-        return None
-    return min(items, key=lambda item: SEVERITY_PRIORITY.index(item) if item in SEVERITY_PRIORITY else len(SEVERITY_PRIORITY))
+def worst_severity(values: Iterable[Severity]) -> Severity | None:
+    """Return the most urgent status using the same intent as SMART ordering."""
 
+    return min(values, key=lambda item: _DISPLAY_PRIORITY.get(item, 5), default=None)
 
 def band_for_remaining(remaining: float | None) -> Severity:
     if remaining is None or isinstance(remaining, bool):
@@ -55,7 +50,6 @@ def band_for_remaining(remaining: float | None) -> Severity:
         if value >= floor:
             return band
     return Severity.EXHAUSTED
-
 
 def apply_hysteresis(previous: Severity | None, remaining: float | None) -> Severity:
     current = band_for_remaining(remaining)
@@ -77,7 +71,6 @@ def apply_hysteresis(previous: Severity | None, remaining: float | None) -> Seve
             return previous
     return current
 
-
 def _rank(severity: Severity) -> int:
     order = [
         Severity.EXHAUSTED,
@@ -92,6 +85,16 @@ def _rank(severity: Severity) -> int:
         return 3
 
 
+def _reset_utc(value: object) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    try:
+        if value.tzinfo is None or value.utcoffset() is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    except (OSError, OverflowError, TypeError, ValueError):
+        return None
+
 def detect_reset(previous: UsageSnapshot | None, current: UsageSnapshot) -> bool:
     if previous is None or current.status != "ok" or not previous.windows or not current.windows:
         return False
@@ -105,11 +108,12 @@ def detect_reset(previous: UsageSnapshot | None, current: UsageSnapshot) -> bool
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     for old, new in zip(previous.windows, current.windows, strict=False):
-        if old.resets_at and new.resets_at and new.resets_at > old.resets_at:
-            if old.resets_at <= now:
+        old_reset = _reset_utc(old.resets_at)
+        new_reset = _reset_utc(new.resets_at)
+        if old_reset and new_reset and new_reset > old_reset:
+            if old_reset <= now:
                 reset_passed = True
     return jumped and (reset_passed or prev_min < 30.0)
-
 
 def snapshot_severity(
     snapshot: UsageSnapshot,
@@ -128,7 +132,6 @@ def snapshot_severity(
     if snapshot.status in {"error", "rate_limited"}:
         return Severity.ERROR
     return apply_hysteresis(previous_severity, snapshot.critical_remaining)
-
 
 def character_state(severity: Severity) -> CharacterState:
     mapping = {

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import timezone
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
+from math import isfinite
 
 from PIL import Image, ImageDraw
 
@@ -22,6 +24,7 @@ from quotadeck.renderer.canvas import (
     draw_panel,
     draw_pixel_text,
     draw_split_quota_bar,
+    draw_split_usage_bar,
     new_canvas,
     pixel_identifier,
     pixel_text_width,
@@ -29,6 +32,9 @@ from quotadeck.renderer.canvas import (
     truncate_pixel_middle,
     truncate_pixel_text,
 )
+from quotadeck.renderer.icons import COIN_SIZE, load_cost_coin
+from quotadeck.usage.display import CumulativeSnapshot
+from quotadeck.usage.models import CostCurrency, UsageIntensity, UsagePeriod
 
 # Inclusive pixel boxes. A single account always owns the full LCD.
 HEADER = (3, 3, 236, 18)
@@ -38,6 +44,17 @@ SPRITE_SLOT = (4, 23, 91, 130)
 RATE_TOP = (97, 21, 236, 74)
 RATE_BOTTOM = (97, 79, 236, 132)
 RATE_SINGLE = RATE_BAY
+USAGE_BAR = RATE_TOP
+USAGE_TABLE = RATE_BOTTOM
+# 7x7 transparent coin at the left start of the THIS cost cell.
+COST_COIN_ORIGIN = (99, 118)
+COST_COIN_BOX = (
+    COST_COIN_ORIGIN[0],
+    COST_COIN_ORIGIN[1],
+    COST_COIN_ORIGIN[0] + COIN_SIZE - 1,
+    COST_COIN_ORIGIN[1] + COIN_SIZE - 1,
+)
+COST_THIS_LEFT = COST_COIN_ORIGIN[0] + COIN_SIZE + 1
 WEEKDAYS = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
 
 METER_COLORS = {
@@ -60,12 +77,22 @@ def _hex(color: str) -> tuple[int, int, int]:
 
 def reset_parts(snapshot: UsageSnapshot) -> tuple[str, str] | None:
     """Retained for API compatibility; reset text is no longer put on the LCD."""
-    times = [window.resets_at for window in snapshot.windows if window.resets_at]
+    times: list[datetime] = []
+    for window in snapshot.windows:
+        reset = window.resets_at
+        if not isinstance(reset, datetime):
+            continue
+        try:
+            if reset.tzinfo is None or reset.utcoffset() is None:
+                reset = reset.replace(tzinfo=timezone.utc)
+            else:
+                reset = reset.astimezone(timezone.utc)
+        except (OSError, OverflowError, TypeError, ValueError):
+            continue
+        times.append(reset)
     if not times:
         return None
     soonest = min(times)
-    if soonest.tzinfo is None:
-        soonest = soonest.replace(tzinfo=timezone.utc)
     local = soonest.astimezone()
     return WEEKDAYS[local.weekday()], local.strftime("%H:%M")
 
@@ -114,7 +141,7 @@ def _fit_sprite(
 
 def _draw_header(
     image: Image.Image,
-    snapshot: UsageSnapshot,
+    snapshot: UsageSnapshot | CumulativeSnapshot,
     severity: Severity,
     accent: tuple[int, int, int],
     position: tuple[int, int] | None,
@@ -145,6 +172,396 @@ def _draw_header(
             fill=TEXT,
         )
     _draw_status_icon(draw, severity, severity_color(severity.value))
+
+
+def compact_token_count(value: int) -> str:
+    """Format a non-negative token count for the narrow LCD data bay."""
+
+    try:
+        count = max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        count = 0
+    units = (
+        (1, ""),
+        (1_000, "K"),
+        (1_000_000, "M"),
+        (1_000_000_000, "B"),
+        (1_000_000_000_000, "T"),
+    )
+    unit_index = 0
+    for index, (divisor, _suffix) in enumerate(units):
+        if count < divisor:
+            break
+        unit_index = index
+
+    while True:
+        divisor, suffix = units[unit_index]
+        if unit_index == 0:
+            return str(count)
+        if count < divisor * 10:
+            quotient, remainder = divmod(count * 10, divisor)
+            if remainder * 2 > divisor or (
+                remainder * 2 == divisor and quotient % 2
+            ):
+                quotient += 1
+            rendered = f"{quotient // 10}.{quotient % 10}"
+            rounded_below_thousand = True
+        else:
+            quotient, remainder = divmod(count, divisor)
+            if remainder * 2 > divisor or (
+                remainder * 2 == divisor and quotient % 2
+            ):
+                quotient += 1
+            rendered = str(quotient)
+            rounded_below_thousand = quotient < 1000
+        if rounded_below_thousand or unit_index == len(units) - 1:
+            if unit_index == len(units) - 1 and not rounded_below_thousand:
+                return "999T+"
+            return f"{rendered}{suffix}"
+        unit_index += 1
+
+
+def cumulative_period_display(snapshot: CumulativeSnapshot) -> str:
+    """Render the retained span once (``365D`` or ``SINCE 42D``)."""
+
+    if snapshot.total_period_label == "365D":
+        return "365D"
+    days = snapshot.observed_days
+    return "SINCE" if days is None else f"SINCE {days}D"
+
+
+def _nonnegative_decimal(value: object) -> Decimal | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = Decimal(value) if isinstance(value, int) else Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not parsed.is_finite() or parsed < 0:
+        return None
+    return parsed
+
+
+def _round_decimal(value: Decimal, quantum: Decimal) -> Decimal:
+    with localcontext() as context:
+        digits = len(value.as_tuple().digits)
+        context.prec = max(28, digits + abs(value.adjusted()) + 8)
+        return value.quantize(quantum, rounding=ROUND_HALF_UP)
+
+
+def _format_shared_value(
+    value: Decimal | None,
+    *,
+    divisor: Decimal,
+    suffix: str,
+    fine_base_unit: bool = False,
+) -> str:
+    if value is None:
+        return "--"
+    if value == 0:
+        return "0"
+    scaled = value / divisor
+    if divisor != 1 and scaled < Decimal("0.05"):
+        return f"<0.1{suffix}"
+    tiny_base = Decimal("0.005") if fine_base_unit else Decimal("0.05")
+    if divisor == 1 and scaled < tiny_base:
+        return "<0.01" if fine_base_unit else "<0.1"
+    if fine_base_unit and divisor == 1 and scaled < 10:
+        shown = _round_decimal(scaled, Decimal("0.01"))
+    elif scaled < 10:
+        shown = _round_decimal(scaled, Decimal("0.1"))
+    else:
+        shown = _round_decimal(scaled, Decimal("1"))
+    rendered = format(shown, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    if not rendered:
+        rendered = "0"
+    return f"{rendered}{suffix}"
+
+
+def _shared_unit_pair(
+    first: Decimal | None,
+    second: Decimal | None,
+    units: tuple[tuple[Decimal, str, Decimal], ...],
+    *,
+    fine_base_unit: bool = False,
+    cap: str,
+) -> tuple[str, str]:
+    present = [value for value in (first, second) if value is not None]
+    if not present:
+        return "--", "--"
+    largest = max(present)
+    unit_index = 0
+    for index, (_divisor, _suffix, threshold) in enumerate(units):
+        if largest >= threshold:
+            unit_index = index
+    divisor, suffix, _threshold = units[unit_index]
+    if unit_index == len(units) - 1 and largest >= divisor * Decimal("999.5"):
+
+        def capped(value: Decimal | None) -> str:
+            if value is None:
+                return "--"
+            if value >= divisor * Decimal("999.5"):
+                return cap
+            return _format_shared_value(
+                value,
+                divisor=divisor,
+                suffix=suffix,
+                fine_base_unit=fine_base_unit,
+            )
+
+        return capped(first), capped(second)
+    return (
+        _format_shared_value(
+            first,
+            divisor=divisor,
+            suffix=suffix,
+            fine_base_unit=fine_base_unit,
+        ),
+        _format_shared_value(
+            second,
+            divisor=divisor,
+            suffix=suffix,
+            fine_base_unit=fine_base_unit,
+        ),
+    )
+
+
+def compact_token_pair(
+    this_tokens: int | None,
+    average_tokens: int | None,
+) -> tuple[str, str]:
+    """Format THIS/AVG token values with one shared, directly comparable unit."""
+
+    first = _nonnegative_decimal(this_tokens)
+    second = _nonnegative_decimal(average_tokens)
+    units = (
+        (Decimal(1), "", Decimal(0)),
+        (Decimal(1_000), "K", Decimal(1_000)),
+        (Decimal(1_000_000), "M", Decimal(999_500)),
+        (Decimal(1_000_000_000), "B", Decimal(999_500_000)),
+        (Decimal(1_000_000_000_000), "T", Decimal(999_500_000_000)),
+    )
+    return _shared_unit_pair(first, second, units, cap="999T+")
+
+
+def compact_cost_pair(
+    this_cost_usd: Decimal | int | float | str | None,
+    average_cost_usd: Decimal | int | float | str | None,
+    *,
+    currency: CostCurrency = CostCurrency.USD,
+    usd_to_krw_rate: Decimal | int | float | str = 1400,
+) -> tuple[str, str]:
+    """Format a list-price pair in the selected currency using one shared unit.
+
+    USD values keep their ordinary dollar scale.  KRW values use 10,000 won as
+    the implicit base unit so the LCD can stay ASCII-only: ``1K`` therefore
+    means 10,000,000 won, ``1M`` means 10,000,000,000 won, and ``1B`` means
+    10,000,000,000,000 won.  The GUI labels that base unit for the user.
+    """
+
+    first = _nonnegative_decimal(this_cost_usd)
+    second = _nonnegative_decimal(average_cost_usd)
+    if first is None or second is None:
+        return "--", "--"
+    if currency is CostCurrency.KRW:
+        rate = _nonnegative_decimal(usd_to_krw_rate)
+        if rate is None or rate == 0:
+            return "--", "--"
+        krw_base = Decimal(10_000)
+        first = first * rate / krw_base
+        second = second * rate / krw_base
+        units = (
+            (Decimal(1), "", Decimal(0)),
+            (Decimal(1_000), "K", Decimal("999.5")),
+            (Decimal(1_000_000), "M", Decimal(999_500)),
+            (Decimal(1_000_000_000), "B", Decimal(999_500_000)),
+        )
+        return _shared_unit_pair(
+            first,
+            second,
+            units,
+            fine_base_unit=True,
+            cap="999B+",
+        )
+
+    # Moving to the next SI unit at one tenth keeps money values to at most
+    # four visible glyphs (400/800 USD -> 0.4K/0.8K) on each 67px column.
+    units = (
+        (Decimal(1), "", Decimal(0)),
+        (Decimal(1_000), "K", Decimal(100)),
+        (Decimal(1_000_000), "M", Decimal(100_000)),
+        (Decimal(1_000_000_000), "B", Decimal(100_000_000)),
+        (Decimal(1_000_000_000_000), "T", Decimal(100_000_000_000)),
+    )
+    return _shared_unit_pair(
+        first,
+        second,
+        units,
+        fine_base_unit=True,
+        cap="999T+",
+    )
+
+
+def _centered_pixel_x(text: str, left: int, right: int, *, scale: int = 2) -> int:
+    return left + max(0, (right - left + 1 - pixel_text_width(text, scale)) // 2)
+
+
+def _draw_usage_pair(
+    image: Image.Image,
+    left_value: str,
+    right_value: str,
+    *,
+    y: int,
+    left_fill: tuple[int, int, int],
+    right_fill: tuple[int, int, int] = TEXT,
+    left_bound: int = 99,
+) -> None:
+    draw_pixel_text(
+        image,
+        (_centered_pixel_x(left_value, left_bound, 166), y),
+        left_value,
+        fill=left_fill,
+        scale=2,
+    )
+    draw_pixel_text(
+        image,
+        (_centered_pixel_x(right_value, 168, 234), y),
+        right_value,
+        fill=right_fill,
+        scale=2,
+    )
+
+
+def _draw_cost_coin(image: Image.Image) -> None:
+    coin = load_cost_coin()
+    if coin is None:
+        return
+    image.paste(coin, COST_COIN_ORIGIN, coin)
+
+
+def _usage_bar_percent(snapshot: CumulativeSnapshot) -> float | None:
+    ratio = snapshot.ratio
+    if ratio is None:
+        return None
+    try:
+        value = float(ratio) * 100.0
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if value < 0 or value != value:
+        return None
+    return value
+
+
+def cumulative_bar_caption(
+    snapshot: CumulativeSnapshot,
+    currency: CostCurrency,
+) -> str:
+    """Return the exact visible period/status label above the Bar.
+
+    Currency belongs to the GUI setting, not the compact LCD Bar.  Keeping it
+    out also makes the available-state caption stable when only the currency
+    selection changes.
+    """
+
+    del currency  # Retain the call signature for renderer/hash compatibility.
+
+    period = "D" if snapshot.period is UsagePeriod.DAILY else "M"
+    if snapshot.status == "partial":
+        return f"{period} PARTIAL"
+    if not snapshot.available:
+        return f"{period} N/A"
+    if snapshot.intensity is UsageIntensity.INSUFFICIENT_HISTORY:
+        return f"{period} BUILD"
+    return f"{period} AVG"
+
+
+def _paint_cumulative_available(
+    image: Image.Image,
+    snapshot: CumulativeSnapshot,
+    metric_color: tuple[int, int, int],
+    *,
+    currency: CostCurrency,
+    usd_to_krw_rate: Decimal | int | float | str,
+) -> None:
+    draw_split_usage_bar(
+        image,
+        USAGE_BAR,
+        _usage_bar_percent(snapshot),
+        cumulative_bar_caption(snapshot, currency),
+        metric_color,
+        outline=BORDER,
+    )
+
+    draw_panel(image, USAGE_TABLE, fill=PANEL, outline=BORDER)
+    ImageDraw.Draw(image).line((167, 81, 167, 130), fill=BORDER)
+    _draw_usage_pair(
+        image,
+        "THIS",
+        "AVG",
+        y=82,
+        left_fill=metric_color,
+        right_fill=MUTED,
+    )
+    token_pair = compact_token_pair(snapshot.this_tokens, snapshot.average_tokens)
+    _draw_usage_pair(
+        image,
+        *token_pair,
+        y=99,
+        left_fill=metric_color,
+    )
+    cost_pair = compact_cost_pair(
+        snapshot.this_cost_usd,
+        snapshot.average_cost_usd,
+        currency=currency,
+        usd_to_krw_rate=usd_to_krw_rate,
+    )
+    _draw_cost_coin(image)
+    _draw_usage_pair(
+        image,
+        *cost_pair,
+        y=116,
+        left_fill=metric_color,
+        left_bound=COST_THIS_LEFT,
+    )
+
+
+def _paint_cumulative_unavailable(
+    image: Image.Image,
+    snapshot: CumulativeSnapshot,
+    *,
+    currency: CostCurrency,
+) -> None:
+    draw_split_usage_bar(
+        image,
+        USAGE_BAR,
+        None,
+        cumulative_bar_caption(snapshot, currency),
+        METER_COLORS.get(snapshot.severity, METER_COLORS[Severity.STALE]),
+        outline=BORDER,
+    )
+    draw_panel(image, USAGE_TABLE, fill=PANEL, outline=BORDER)
+    ImageDraw.Draw(image).line((167, 81, 167, 130), fill=BORDER)
+    _draw_usage_pair(
+        image,
+        "THIS",
+        "AVG",
+        y=82,
+        left_fill=MUTED,
+        right_fill=MUTED,
+    )
+    _draw_usage_pair(image, "N/A", "N/A", y=99, left_fill=MUTED, right_fill=MUTED)
+    _draw_cost_coin(image)
+    _draw_usage_pair(
+        image,
+        "--",
+        "--",
+        y=116,
+        left_fill=MUTED,
+        right_fill=MUTED,
+        left_bound=COST_THIS_LEFT,
+    )
 
 
 def _draw_status_icon(
@@ -241,6 +658,42 @@ def paint_account(
             METER_COLORS.get(severity, METER_COLORS[Severity.STALE]),
             outline=BORDER,
         )
+    return image
+
+
+def paint_cumulative_account(
+    snapshot: CumulativeSnapshot,
+    sprite: Image.Image,
+    accent: str,
+    *,
+    position: tuple[int, int] | None = None,
+    currency: CostCurrency = CostCurrency.USD,
+    usd_to_krw_rate: Decimal | int | float | str = 1400,
+) -> Image.Image:
+    """Paint one cumulative-usage account on the complete 240x135 LCD."""
+
+    image = new_canvas()
+    draw = ImageDraw.Draw(image)
+    accent_rgb = _hex(accent)
+    severity = snapshot.severity
+    draw.rectangle((0, 0, LCD_WIDTH - 1, LCD_HEIGHT - 1), outline=BORDER)
+    _draw_header(image, snapshot, severity, accent_rgb, position)
+
+    draw_panel(image, CHAR_BAY, fill=PANEL, outline=BORDER)
+    draw_corner_brackets(image, CHAR_BAY, color=accent_rgb, arm=6)
+    fitted, origin = _fit_sprite(sprite, SPRITE_SLOT)
+    image.paste(fitted, origin, fitted)
+
+    if snapshot.available:
+        _paint_cumulative_available(
+            image,
+            snapshot,
+            severity_color(severity.value),
+            currency=currency,
+            usd_to_krw_rate=usd_to_krw_rate,
+        )
+    else:
+        _paint_cumulative_unavailable(image, snapshot, currency=currency)
     return image
 
 

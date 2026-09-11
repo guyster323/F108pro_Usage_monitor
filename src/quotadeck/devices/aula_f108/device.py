@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -14,6 +16,8 @@ from quotadeck.devices.aula_f108.constants import (
 from quotadeck.devices.aula_f108.payload import Frame, build_payload
 from quotadeck.devices.aula_f108.protocol import Progress, sync_clock, upload_payload
 from quotadeck.devices.aula_f108.transport import Transport
+
+log = logging.getLogger("quotadeck.device")
 
 @dataclass
 class HidInterface:
@@ -32,7 +36,6 @@ def aula_software_running() -> list[str]:
         raw = subprocess.check_output(
             ["tasklist", "/FO", "CSV", "/NH"],
             text=True,
-            timeout=5,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except Exception:
@@ -48,8 +51,14 @@ def enumerate_interfaces() -> list[HidInterface]:
     try:
         import hid
     except ImportError:
+        log.warning("event=hid_enumeration_unavailable reason=import")
         return results
-    for info in hid.enumerate(VID, PID):
+    try:
+        interfaces = hid.enumerate(VID, PID)
+    except Exception:
+        log.exception("event=hid_enumeration_failed")
+        return results
+    for info in interfaces:
         results.append(
             HidInterface(
                 usage_page=int(info.get("usage_page") or 0),
@@ -60,6 +69,7 @@ def enumerate_interfaces() -> list[HidInterface]:
                 else str(info.get("path") or ""),
             )
         )
+    log.info("event=hid_enumeration interfaces=%d", len(results))
     return results
 
 def wired_mode_ok(interfaces: list[HidInterface] | None = None) -> bool:
@@ -74,19 +84,42 @@ def open_transport(prefer: str = "auto") -> Transport:
     else:
         order = [prefer]
     for name in order:
+        started = time.monotonic()
+        log.info("event=transport_open_start backend=%s", name)
         try:
             if name == "hidapi":
                 from quotadeck.devices.aula_f108.transport_hidapi import HidapiTransport
-                return HidapiTransport()
+                transport = HidapiTransport()
+                log.info(
+                    "event=transport_open_complete backend=%s duration_ms=%d",
+                    name,
+                    int((time.monotonic() - started) * 1000),
+                )
+                return transport
             if name == "win32":
                 from quotadeck.devices.aula_f108.transport_win32 import Win32Transport
 
-                return Win32Transport()
+                transport = Win32Transport()
+                log.info(
+                    "event=transport_open_complete backend=%s duration_ms=%d",
+                    name,
+                    int((time.monotonic() - started) * 1000),
+                )
+                return transport
             if name == "mock":
                 from quotadeck.devices.aula_f108.transport_mock import MockTransport
 
-                return MockTransport()
+                transport = MockTransport()
+                log.info("event=transport_open_complete backend=%s duration_ms=0", name)
+                return transport
+            raise ValueError(f"unsupported transport: {name}")
         except Exception as exc:
+            log.warning(
+                "event=transport_open_failed backend=%s error_type=%s duration_ms=%d",
+                name,
+                type(exc).__name__,
+                int((time.monotonic() - started) * 1000),
+            )
             errors.append(f"{name}: {exc}")
     raise RuntimeError("could not open F108: " + " | ".join(errors))
 
@@ -95,7 +128,13 @@ class F108Device:
         self.transport = transport or open_transport(prefer)
 
     def upload_frames(self, frames: list[Frame], progress: Progress | None = None) -> int:
+        log.info(
+            "event=payload_build_start frames=%d backend=%s",
+            len(frames),
+            type(self.transport).__name__,
+        )
         payload = build_payload(frames)
+        log.info("event=payload_build_complete frames=%d bytes=%d", len(frames), len(payload))
         upload_payload(self.transport, payload, progress)
         return len(payload)
     def upload_payload(self, payload: bytes, progress: Progress | None = None) -> None:
@@ -105,7 +144,14 @@ class F108Device:
         return sync_clock(self.transport)
 
     def close(self) -> None:
-        self.transport.close()
+        backend = type(self.transport).__name__
+        log.info("event=transport_close_start backend=%s", backend)
+        try:
+            self.transport.close()
+        except Exception:
+            log.exception("event=transport_close_failed backend=%s", backend)
+            raise
+        log.info("event=transport_close_complete backend=%s", backend)
 
     def __enter__(self) -> F108Device:
         return self

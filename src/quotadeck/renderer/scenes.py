@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 from quotadeck.core.models import DisplayMode, Severity, UsageSnapshot
 from quotadeck.core.severity import character_state
-from quotadeck.devices.aula_f108.constants import LCD_DEFAULT_BUDGET
 from quotadeck.devices.aula_f108.payload import Frame
 from quotadeck.renderer.budget import allocate
-from quotadeck.renderer.layout import paint_account, paint_empty
+from quotadeck.renderer.layout import (
+    paint_account,
+    paint_cumulative_account,
+    paint_empty,
+)
 from quotadeck.renderer.sprites import Theme, load_theme
+from quotadeck.usage.display import CumulativeSnapshot
+from quotadeck.usage.models import CostCurrency
 
 
 def _sprite_index(
@@ -22,7 +28,7 @@ def _sprite_index(
     if sprite_count == 2:
         # Image-generated pose pairs can differ more than a one-pixel breath.
         # Show the expression pose briefly instead of morphing twice per second.
-        slot_frames = 8 if frame_count is None else frame_count
+        slot_frames = (8 if state == "idle" else 4) if frame_count is None else frame_count
         if slot_frames <= 1:
             return 0
         expression_frame = max(1, (slot_frames - 1) // 2)
@@ -38,7 +44,7 @@ def render_playlist(
     theme: Theme | Path,
     *,
     mode: DisplayMode = DisplayMode.SMART,
-    frame_budget: int = LCD_DEFAULT_BUDGET,
+    frame_budget: int = 32,
     hold_ms: int | None = None,
 ) -> list[Frame]:
     """Render one equal-duration full-screen slot for every selected account."""
@@ -46,7 +52,7 @@ def render_playlist(
     # runtime validator instead of trusting an unchecked dataclass instance.
     theme_obj = load_theme(theme.root) if isinstance(theme, Theme) else load_theme(Path(theme))
     if not snapshots:
-        return [Frame(image=paint_empty(), delay_ms=500)]
+        return [Frame(image=paint_empty(), delay_ms=2000)]
 
     ordered = _order(snapshots, severities, mode)
     budget = allocate(len(ordered), frame_budget, hold_ms=hold_ms)
@@ -83,6 +89,80 @@ def render_playlist(
             f"renderer produced {len(frames)} frames; budget expected {budget.total_frames}"
         )
     return frames
+
+
+def render_cumulative_playlist(
+    snapshots: list[CumulativeSnapshot],
+    theme: Theme | Path,
+    *,
+    mode: DisplayMode = DisplayMode.SMART,
+    frame_budget: int = 32,
+    hold_ms: int | None = None,
+    currency: CostCurrency = CostCurrency.USD,
+    usd_to_krw_rate: Decimal | int | float | str = 1400,
+) -> list[Frame]:
+    """Render cumulative token cards without conflating N/A with zero use."""
+
+    theme_obj = load_theme(theme.root) if isinstance(theme, Theme) else load_theme(Path(theme))
+    if not snapshots:
+        return [Frame(image=paint_empty(), delay_ms=2000)]
+
+    ordered = _order_cumulative(snapshots, mode)
+    budget = allocate(len(ordered), frame_budget, hold_ms=hold_ms)
+    frames: list[Frame] = []
+    total = len(ordered)
+    for position, snapshot in enumerate(ordered, start=1):
+        state = snapshot.sprite_state
+        sprites = theme_obj.state_images(snapshot.provider, state)
+        accent = theme_obj.accent(snapshot.provider)
+        for frame_index, delay_ms in enumerate(budget.frame_delays_ms):
+            sprite = sprites[
+                _sprite_index(
+                    frame_index,
+                    len(sprites),
+                    state,
+                    budget.frames_per_account,
+                )
+            ]
+            frames.append(
+                Frame(
+                    image=paint_cumulative_account(
+                        snapshot,
+                        sprite,
+                        accent,
+                        position=(position, total),
+                        currency=currency,
+                        usd_to_krw_rate=usd_to_krw_rate,
+                    ),
+                    delay_ms=delay_ms,
+                )
+            )
+    if len(frames) != budget.total_frames:
+        raise RuntimeError(
+            f"renderer produced {len(frames)} frames; budget expected {budget.total_frames}"
+        )
+    return frames
+
+
+def _order_cumulative(
+    snapshots: list[CumulativeSnapshot],
+    mode: DisplayMode,
+) -> list[CumulativeSnapshot]:
+    """Put the highest measured average multiple first and unknowns last."""
+
+    if mode == DisplayMode.FIXED:
+        return list(snapshots)
+
+    def priority(snapshot: CumulativeSnapshot) -> tuple[int, float]:
+        if not snapshot.available:
+            return 2, 0.0
+        ratio = snapshot.ratio
+        if ratio is None or ratio != ratio or ratio < 0:
+            return 1, 0.0
+        return 0, -ratio
+
+    # Sorting is stable, so equal ratios retain the user's account order.
+    return sorted(snapshots, key=priority)
 
 
 def _order(

@@ -6,9 +6,7 @@ from quotadeck.devices.aula_f108.constants import (
     LCD_FRAME_BYTES,
     LCD_HEADER_BYTES,
     LCD_HEIGHT,
-    LCD_DELAY_TICK_MS,
     LCD_MAX_FRAMES,
-    LCD_MAX_DELAY_MS,
     LCD_PAGE_BYTES,
     LCD_WIDTH,
 )
@@ -41,9 +39,9 @@ def test_rgb565_preview_round_trip() -> None:
 
 
 def test_delay_byte_units() -> None:
-    assert delay_byte(LCD_DELAY_TICK_MS) == 1
-    assert delay_byte(400) == 200
-    assert delay_byte(LCD_MAX_DELAY_MS) == 255
+    assert delay_byte(20) == 1
+    assert delay_byte(400) == 20
+    assert delay_byte(5100) == 255
     assert delay_byte(1) == 1
 
 def test_build_payload_header_and_padding() -> None:
@@ -67,21 +65,21 @@ def test_rejects_too_many_frames() -> None:
 
 def test_accepts_exact_hard_frame_limit() -> None:
     img = Image.new("RGB", (LCD_WIDTH, LCD_HEIGHT), (0, 0, 0))
-    frames = [Frame(image=img, delay_ms=LCD_DELAY_TICK_MS) for _ in range(LCD_MAX_FRAMES)]
+    frames = [Frame(image=img, delay_ms=20) for _ in range(LCD_MAX_FRAMES)]
     validate_frames(frames)
     assert build_payload(frames)[0] == LCD_MAX_FRAMES
 
 
 def test_rejects_delay_above_firmware_limit() -> None:
     img = Image.new("RGB", (LCD_WIDTH, LCD_HEIGHT), (0, 0, 0))
-    with pytest.raises(PayloadError, match="510"):
-        validate_frames([Frame(image=img, delay_ms=LCD_MAX_DELAY_MS + LCD_DELAY_TICK_MS)])
+    with pytest.raises(PayloadError, match="5100"):
+        validate_frames([Frame(image=img, delay_ms=5120)])
 
 
 def test_rejects_delay_between_firmware_ticks() -> None:
     img = Image.new("RGB", (LCD_WIDTH, LCD_HEIGHT), (0, 0, 0))
-    with pytest.raises(PayloadError, match="2 ms tick"):
-        validate_frames([Frame(image=img, delay_ms=3)])
+    with pytest.raises(PayloadError, match="20 ms tick"):
+        validate_frames([Frame(image=img, delay_ms=30)])
 
 
 def test_rejects_wrong_size() -> None:

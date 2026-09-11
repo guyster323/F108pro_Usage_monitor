@@ -5,7 +5,6 @@ from PyInstaller.utils.hooks import collect_data_files
 
 ROOT = Path(SPECPATH)
 theme_datas = collect_data_files("quotadeck")
-theme_datas += [(str(ROOT / "themes" / "quotadeck-crew"), "themes/quotadeck-crew")]
 a = Analysis(
     [str(ROOT / "src" / "quotadeck" / "__main__.py")],
     pathex=[str(ROOT / "src")],

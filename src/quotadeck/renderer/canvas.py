@@ -67,6 +67,10 @@ PIXEL_TEXT_GLYPHS = {
     "/": ("00001", "00010", "00010", "00100", "01000", "01000", "10000"),
     ".": ("00000", "00000", "00000", "00000", "00000", "00110", "00110"),
     "?": ("01110", "10001", "00001", "00010", "00100", "00000", "00100"),
+    "$": ("00100", "01111", "10100", "01110", "00101", "11110", "00100"),
+    ":": ("00000", "00110", "00110", "00000", "00110", "00110", "00000"),
+    ",": ("00000", "00000", "00000", "00000", "00110", "00100", "01000"),
+    "<": ("00001", "00010", "00100", "01000", "00100", "00010", "00001"),
 }
 # Compact 3x5 numeric glyphs, scaled to a 25px cap-height.
 PIXEL_GLYPHS = {
@@ -82,6 +86,7 @@ PIXEL_GLYPHS = {
     "9": ("111", "101", "111", "001", "111"),
     "%": ("10001", "00010", "00100", "01000", "10001"),
     "-": ("000", "000", "111", "000", "000"),
+    "+": ("000", "010", "111", "010", "000"),
 }
 
 def new_canvas(color: tuple[int, int, int] = BG) -> Image.Image:
@@ -284,11 +289,107 @@ def draw_split_quota_bar(
     return boundary
 
 
+def _normalized_usage_percent(percent: object) -> float | None:
+    if percent is None or isinstance(percent, bool):
+        return None
+    try:
+        parsed = float(percent)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed >= 0 and parsed == parsed else None
+
+
+def usage_bar_boundary(
+    box: tuple[int, int, int, int],
+    percent: object,
+) -> int:
+    """Return the first empty-track pixel using the renderer's exact math."""
+
+    x0, _y0, x1, _y1 = box
+    ix0, ix1 = x0 + 2, x1 - 2
+    width = ix1 - ix0 + 1
+    raw = _normalized_usage_percent(percent)
+    fill_percent = 0.0 if raw is None else min(100.0, raw)
+    fill_w = max(0, min(width, int(round(fill_percent * width / 100.0))))
+    return ix0 + fill_w
+
+
+def draw_split_usage_bar(
+    image: Image.Image,
+    box: tuple[int, int, int, int],
+    percent: float | None,
+    label: str,
+    color: tuple[int, int, int],
+    *,
+    outline: tuple[int, int, int] = BORDER,
+) -> int:
+    """Draw current-period usage against its completed-period average.
+
+    The visual track deliberately fills at 100%: that is the point where the
+    selected period has consumed one historical average.  The numeric label is
+    *not* clamped, so 150% and 200% remain visible; the highest reaction band is
+    rendered as ``300%+``.  This is separate from ``draw_split_quota_bar``
+    because quota percentages are bounded while comparison ratios are not.
+    """
+
+    raw = _normalized_usage_percent(percent)
+
+    draw = ImageDraw.Draw(image)
+    x0, y0, x1, y1 = box
+    draw.rectangle(box, fill=PANEL_2, outline=outline)
+    ix0, iy0, ix1, iy1 = x0 + 2, y0 + 2, x1 - 2, y1 - 2
+    draw.rectangle((ix0, iy0, ix1, iy1), fill=BAR_BG)
+    width = ix1 - ix0 + 1
+    boundary = usage_bar_boundary(box, raw)
+    fill_w = boundary - ix0
+    if fill_w:
+        draw.rectangle((ix0, iy0, boundary - 1, iy1), fill=color)
+
+    text_mask = Image.new("L", image.size, 0)
+    label_text = truncate_pixel_text(label, width - 8, scale=2)
+    draw_pixel_text(text_mask, (ix0 + 4, iy0 + 3), label_text, fill=255, scale=2)
+    shown_percent = usage_percent_label(raw)
+    percent_w = pixel_number_width(shown_percent, scale=5)
+    draw_pixel_number(
+        text_mask,
+        (max(ix0 + 4, ix1 - percent_w - 4), iy1 - 28),
+        shown_percent,
+        fill=255,
+        scale=5,
+    )
+
+    fill_region = Image.new("L", image.size, 0)
+    if fill_w:
+        ImageDraw.Draw(fill_region).rectangle((ix0, iy0, boundary - 1, iy1), fill=255)
+    empty_region = Image.new("L", image.size, 0)
+    if boundary <= ix1:
+        ImageDraw.Draw(empty_region).rectangle((boundary, iy0, ix1, iy1), fill=255)
+    image.paste(BAR_TEXT_ON_FILL, mask=ImageChops.multiply(text_mask, fill_region))
+    image.paste(BAR_TEXT_ON_EMPTY, mask=ImageChops.multiply(text_mask, empty_region))
+    return boundary
+
+
 def _quota_percent(remaining: float | None) -> str:
     normalized = normalize_remaining(remaining)
     if normalized is None:
         return "--%"
     return f"{int(round(normalized))}%"
+
+
+def usage_percent_label(percent: float | None) -> str:
+    """Format a non-negative average percentage without crossing a band."""
+
+    if percent is None:
+        return "--%"
+    if not isinstance(percent, (int, float)):
+        return "--%"
+    if percent != percent or percent < 0:
+        return "--%"
+    if percent >= 300 or percent == float("inf"):
+        return "300%+"
+    # Truncation keeps 149.9% paired with the <1.5x character state instead of
+    # rounding the label into the next band.
+    return f"{int(percent)}%"
 
 def draw_bar(
     image: Image.Image,

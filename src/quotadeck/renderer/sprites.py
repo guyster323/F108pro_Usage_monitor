@@ -11,7 +11,7 @@ from PIL import Image
 
 from quotadeck.devices.aula_f108.constants import LCD_HEIGHT, LCD_WIDTH
 
-REQUIRED_STATES = {
+QUOTA_STATES = {
     "idle",
     "busy",
     "caution",
@@ -21,10 +21,23 @@ REQUIRED_STATES = {
     "offline",
     "stale",
 }
+USAGE_STATES = {
+    "usage_below",
+    "usage_similar",
+    "usage_150",
+    "usage_200",
+    "usage_300",
+}
+REQUIRED_STATES = QUOTA_STATES | USAGE_STATES
 REQUIRED_PROVIDERS = {"codex", "claude", "cursor", "grok"}
 HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 RUNTIME_SPRITE_SIZE = (88, 108)
 MIN_OPAQUE_BBOX = (48, 56)
+STATE_MIN_OPAQUE_BBOX = {
+    # The deliberate toppled/collapsed pose is wide and naturally shorter
+    # than a standing character. Keep a strict floor without rejecting it.
+    "usage_300": (64, 40),
+}
 MIN_OPAQUE_PIXELS = 1200
 OPAQUE_BASELINE_EXCLUSIVE = 106
 
@@ -250,14 +263,12 @@ def validate_theme(path: Path) -> list[str]:
                                 f"{provider}/{state}: {name} needs transparent margins "
                                 "and opaque character pixels"
                             )
-                        alpha_values = alpha.tobytes()
-                        if any(value not in {0, 255} for value in alpha_values):
+                        if any(value not in {0, 255} for value in alpha.getdata()):
                             errors.append(f"{provider}/{state}: {name} alpha must be binary")
-                        rgba_values = rgba.tobytes()
                         opaque_colors = {
-                            (rgba_values[index], rgba_values[index + 1], rgba_values[index + 2])
-                            for index in range(0, len(rgba_values), 4)
-                            if rgba_values[index + 3] == 255
+                            (red, green, blue)
+                            for red, green, blue, alpha_value in rgba.getdata()
+                            if alpha_value == 255
                         }
                         if len(opaque_colors) > 48:
                             errors.append(
@@ -275,14 +286,18 @@ def validate_theme(path: Path) -> list[str]:
                         if alpha_box:
                             opaque_width = alpha_box[2] - alpha_box[0]
                             opaque_height = alpha_box[3] - alpha_box[1]
+                            minimum_bbox = STATE_MIN_OPAQUE_BBOX.get(
+                                state,
+                                MIN_OPAQUE_BBOX,
+                            )
                             if (
-                                opaque_width < MIN_OPAQUE_BBOX[0]
-                                or opaque_height < MIN_OPAQUE_BBOX[1]
+                                opaque_width < minimum_bbox[0]
+                                or opaque_height < minimum_bbox[1]
                             ):
                                 errors.append(
                                     f"{provider}/{state}: {name} visible bbox is "
                                     f"{opaque_width}x{opaque_height}; expected at least "
-                                    f"{MIN_OPAQUE_BBOX[0]}x{MIN_OPAQUE_BBOX[1]}"
+                                    f"{minimum_bbox[0]}x{minimum_bbox[1]}"
                                 )
                             if alpha.histogram()[255] < MIN_OPAQUE_PIXELS:
                                 errors.append(

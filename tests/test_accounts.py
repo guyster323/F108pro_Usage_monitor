@@ -51,12 +51,12 @@ def test_select_accounts_empty_when_all_disabled() -> None:
     assert select_accounts(discovered, config) == []
 
 
-def test_config_defaults_are_sixty_five_thirty() -> None:
+def test_config_defaults_are_sixty_five_ten() -> None:
     from quotadeck.config import AppConfig, _hold_seconds
     config = AppConfig()
     assert config.poll_seconds == 60
     assert config.scene_hold_seconds == 5
-    assert config.min_upload_minutes == 30
+    assert config.min_upload_minutes == 10
     assert _hold_seconds({}) == 5
     assert _hold_seconds({"scene_hold_seconds": 4}) == 4
     assert _hold_seconds({"scene_hold_seconds": 10}) == 10
@@ -65,13 +65,28 @@ def test_config_defaults_are_sixty_five_thirty() -> None:
 
 
 def test_custom_hold_survives_save_load(tmp_path) -> None:
-    from quotadeck.config import AppConfig, load_config, save_config
+    from quotadeck.config import CONFIG_VERSION, AppConfig, load_config, save_config
 
     path = tmp_path / "config.json"
     save_config(AppConfig(scene_hold_seconds=7), path)
     loaded = load_config(path)
     assert loaded.scene_hold_seconds == 7
-    assert loaded.config_version == 4
+    assert loaded.config_version == CONFIG_VERSION == 5
+
+
+def test_minimum_upload_interval_is_clamped_at_config_boundaries(tmp_path) -> None:
+    import json
+
+    from quotadeck.config import AppConfig, load_config
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"min_upload_minutes": 0}), encoding="utf-8")
+    assert load_config(path).min_upload_minutes == 1
+    path.write_text(json.dumps({"min_upload_minutes": -500}), encoding="utf-8")
+    assert load_config(path).min_upload_minutes == 1
+    path.write_text(json.dumps({"min_upload_minutes": 500}), encoding="utf-8")
+    assert load_config(path).min_upload_minutes == 120
+    assert AppConfig(min_upload_minutes=0).min_upload_minutes == 1
 
 
 def test_save_always_stamps_current_config_version(tmp_path) -> None:

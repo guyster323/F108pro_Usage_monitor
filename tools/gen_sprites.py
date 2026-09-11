@@ -24,7 +24,11 @@ if str(SRC) not in sys.path:
 from quotadeck.renderer.sprites import validate_theme
 
 DEFAULT_SOURCE = ROOT / "artwork" / "sprite_sources"
+DEFAULT_USAGE_SOURCE = ROOT / "artwork" / "usage_sprite_sources"
 DEFAULT_THEME = ROOT / "themes" / "quotadeck-crew"
+DEFAULT_BUNDLED_THEME = (
+    ROOT / "src" / "quotadeck" / "bundled" / "themes" / "quotadeck-crew"
+)
 DEFAULT_PREVIEW = ROOT / "artwork" / "sprite_previews" / "runtime_contact_sheet.png"
 
 TARGET_SIZE = (88, 108)
@@ -51,6 +55,14 @@ CELL_MAP = {
     "stale": ((0, 3), (1, 3)),
     "reset": ((2, 3), (3, 3)),
 }
+USAGE_CELL_MAP = {
+    "usage_below": ((0, 0), (1, 0)),
+    "usage_similar": ((2, 0), (3, 0)),
+    "usage_150": ((0, 1), (1, 1)),
+    "usage_200": ((2, 1), (3, 1)),
+    "usage_300": ((0, 2), (1, 2)),
+}
+ALL_STATES = CELL_MAP | USAGE_CELL_MAP
 
 
 class SpriteCompileError(ValueError):
@@ -67,11 +79,23 @@ def _paths_overlap(left: Path, right: Path) -> bool:
     )
 
 
-def _validate_output_paths(source_dir: Path, theme_dir: Path, preview: Path) -> None:
-    if _paths_overlap(source_dir, theme_dir):
-        raise SpriteCompileError("source and theme directories must not overlap")
+def _validate_output_paths(
+    source_dir: Path,
+    theme_dir: Path,
+    preview: Path,
+    usage_source_dir: Path = DEFAULT_USAGE_SOURCE,
+    *,
+    bundled_theme_dir: Path | None = None,
+) -> None:
+    for source in (source_dir, usage_source_dir):
+        if _paths_overlap(source, theme_dir):
+            raise SpriteCompileError("source and theme directories must not overlap")
     preview_resolved = preview.resolve()
-    for label, directory in (("source", source_dir), ("theme", theme_dir)):
+    for label, directory in (
+        ("source", source_dir),
+        ("usage source", usage_source_dir),
+        ("theme", theme_dir),
+    ):
         if preview_resolved.is_relative_to(directory.resolve()):
             raise SpriteCompileError(
                 f"preview must not be inside the {label} directory: {preview}"
@@ -80,6 +104,20 @@ def _validate_output_paths(source_dir: Path, theme_dir: Path, preview: Path) -> 
         raise SpriteCompileError(f"refusing to replace symlinked preview: {preview}")
     if preview.exists() and not preview.is_file():
         raise SpriteCompileError(f"preview target is not a file: {preview}")
+    if bundled_theme_dir is not None:
+        for source in (source_dir, usage_source_dir):
+            if _paths_overlap(source, bundled_theme_dir):
+                raise SpriteCompileError(
+                    "source and bundled theme directories must not overlap"
+                )
+        if _paths_overlap(theme_dir, bundled_theme_dir):
+            raise SpriteCompileError(
+                "generated and bundled theme directories must not overlap"
+            )
+        if preview_resolved.is_relative_to(bundled_theme_dir.resolve()):
+            raise SpriteCompileError(
+                f"preview must not be inside the bundled theme directory: {preview}"
+            )
 
 
 def _is_managed_theme(path: Path) -> bool:
@@ -275,7 +313,10 @@ def _validate_source_cell(
     return primary_box
 
 
-def compile_provider(source: Path) -> dict[str, list[Image.Image]]:
+def compile_provider(
+    source: Path,
+    cell_map: dict[str, tuple[tuple[int, int], tuple[int, int]]] = CELL_MAP,
+) -> dict[str, list[Image.Image]]:
     if not source.is_file():
         raise SpriteCompileError(f"missing source sheet: {source}")
     if source.is_symlink():
@@ -302,7 +343,7 @@ def compile_provider(source: Path) -> dict[str, list[Image.Image]]:
     if sheet.getchannel("A").getextrema() == (255, 255):
         raise SpriteCompileError(f"{source.name} has no transparent alpha")
     compiled: dict[str, list[Image.Image]] = {}
-    for state, locations in CELL_MAP.items():
+    for state, locations in cell_map.items():
         cells = [_cell(sheet, column, row) for column, row in locations]
         primary_boxes = []
         for pose, cell in enumerate(cells):
@@ -340,7 +381,10 @@ def _theme_manifest(providers: dict[str, dict]) -> dict:
         "sprite_size": {"w": TARGET_SIZE[0], "h": TARGET_SIZE[1]},
         "anchor": {"x": 44, "y": 103},
         "asset_pipeline": {
-            "source": "artwork/sprite_sources",
+            "sources": [
+                "artwork/sprite_sources",
+                "artwork/usage_sprite_sources",
+            ],
             "compiler": "tools/gen_sprites.py",
             "pillow": PILLOW_VERSION,
             "layout": "4x4-state-pairs",
@@ -384,7 +428,7 @@ def _write_compiled_theme(
 
         column = Image.new(
             "RGBA",
-            (TARGET_SIZE[0] * 2, TARGET_SIZE[1] * len(CELL_MAP)),
+            (TARGET_SIZE[0] * 2, TARGET_SIZE[1] * len(ALL_STATES)),
             (0, 0, 0, 0),
         )
         for index, frame in enumerate(provider_frames):
@@ -404,10 +448,12 @@ def compile_theme(
     source_dir: Path,
     theme_dir: Path,
     *,
+    usage_source_dir: Path = DEFAULT_USAGE_SOURCE,
     replace_unmanaged: bool = False,
 ) -> list[Image.Image]:
-    if _paths_overlap(source_dir, theme_dir):
-        raise SpriteCompileError("source and theme directories must not overlap")
+    for source in (source_dir, usage_source_dir):
+        if _paths_overlap(source, theme_dir):
+            raise SpriteCompileError("source and theme directories must not overlap")
     if theme_dir.is_symlink():
         raise SpriteCompileError(f"refusing to replace symlinked theme: {theme_dir}")
     if theme_dir.exists() and not theme_dir.is_dir():
@@ -418,10 +464,14 @@ def compile_theme(
             "choose a new target or pass --force"
         )
     # Decode and validate every source cell before touching an existing theme.
-    compiled_providers = {
-        provider: compile_provider(source_dir / f"{provider}.png")
-        for provider in PROVIDERS
-    }
+    compiled_providers = {}
+    for provider in PROVIDERS:
+        quota = compile_provider(source_dir / f"{provider}.png", CELL_MAP)
+        usage = compile_provider(
+            usage_source_dir / f"{provider}.png",
+            USAGE_CELL_MAP,
+        )
+        compiled_providers[provider] = quota | usage
 
     theme_dir.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(
@@ -466,7 +516,8 @@ def write_preview(columns: list[Image.Image], target: Path) -> None:
     if target.exists() and not target.is_file():
         raise SpriteCompileError(f"preview target is not a file: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    label_width = 64
+    # Keep the longest usage-state labels clear of the first sprite column.
+    label_width = 84
     header_height = 24
     preview = Image.new(
         "RGBA",
@@ -497,7 +548,7 @@ def write_preview(columns: list[Image.Image], target: Path) -> None:
         x += column.width
     draw.line((x, 0, x, preview.height - 1), fill=grid)
 
-    for row, state in enumerate(CELL_MAP):
+    for row, state in enumerate(ALL_STATES):
         y = header_height + row * TARGET_SIZE[1]
         draw.text((4, y + 49), state.upper(), fill=muted, font=preview_font)
         draw.line((0, y, preview.width - 1, y), fill=grid)
@@ -557,7 +608,88 @@ def _semantic_files(path: Path) -> dict[Path, str]:
     return result
 
 
-def check_theme(source_dir: Path, theme_dir: Path, preview: Path = DEFAULT_PREVIEW) -> int:
+def _byte_files(path: Path) -> dict[Path, str]:
+    """Hash an asset tree exactly for the distributable package-data mirror."""
+
+    return {
+        file.relative_to(path): hashlib.sha256(file.read_bytes()).hexdigest()
+        for file in path.rglob("*")
+        if file.is_file()
+    }
+
+
+def _changed_paths(left: dict[Path, str], right: dict[Path, str]) -> list[Path]:
+    changed = sorted(set(left) ^ set(right))
+    changed.extend(
+        path for path in sorted(set(left) & set(right)) if left[path] != right[path]
+    )
+    return list(dict.fromkeys(changed))
+
+
+def sync_bundled_theme(source: Path, target: Path) -> None:
+    """Atomically mirror the canonical generated theme into package data."""
+
+    if _paths_overlap(source, target):
+        raise SpriteCompileError(
+            "generated and bundled theme directories must not overlap"
+        )
+    errors = validate_theme(source)
+    if errors:
+        raise SpriteCompileError(
+            "canonical theme is invalid: " + "; ".join(errors[:8])
+        )
+    if target.is_symlink():
+        raise SpriteCompileError(f"refusing to replace symlinked bundled theme: {target}")
+    if target.exists() and not target.is_dir():
+        raise SpriteCompileError(f"bundled theme target is not a directory: {target}")
+    if target.exists() and not _is_managed_theme(target):
+        raise SpriteCompileError(
+            f"refusing to replace unmanaged bundled theme directory: {target}"
+        )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=".quotadeck-bundled-theme-",
+        dir=target.parent,
+    ) as temporary:
+        staged = Path(temporary) / "theme"
+        shutil.copytree(source, staged)
+        staged_errors = validate_theme(staged)
+        if staged_errors:
+            raise SpriteCompileError(
+                "staged bundled theme is invalid: " + "; ".join(staged_errors[:8])
+            )
+        if _byte_files(source) != _byte_files(staged):
+            raise SpriteCompileError("staged bundled theme does not match canonical theme")
+
+        previous = target.with_name(f".{target.name}.backup-{uuid.uuid4().hex}")
+        had_previous = target.exists()
+        try:
+            if had_previous:
+                target.rename(previous)
+            staged.rename(target)
+        except BaseException:
+            if had_previous and previous.exists() and not target.exists():
+                try:
+                    previous.rename(target)
+                except BaseException as restore_error:
+                    raise SpriteCompileError(
+                        "bundled theme replacement and rollback failed; previous "
+                        f"theme remains at {previous}"
+                    ) from restore_error
+            raise
+        if previous.exists():
+            shutil.rmtree(previous)
+
+
+def check_theme(
+    source_dir: Path,
+    theme_dir: Path,
+    preview: Path = DEFAULT_PREVIEW,
+    *,
+    usage_source_dir: Path = DEFAULT_USAGE_SOURCE,
+    bundled_theme_dir: Path | None = None,
+) -> int:
     errors = validate_theme(theme_dir)
     if errors:
         print("committed theme is invalid:", file=sys.stderr)
@@ -567,7 +699,11 @@ def check_theme(source_dir: Path, theme_dir: Path, preview: Path = DEFAULT_PREVI
     with tempfile.TemporaryDirectory(prefix="quotadeck-sprites-") as temp:
         generated = Path(temp) / "theme"
         generated_preview = Path(temp) / "runtime_contact_sheet.png"
-        columns = compile_theme(source_dir, generated)
+        columns = compile_theme(
+            source_dir,
+            generated,
+            usage_source_dir=usage_source_dir,
+        )
         write_preview(columns, generated_preview)
         actual = _semantic_files(theme_dir)
         expected = _semantic_files(generated)
@@ -575,17 +711,31 @@ def check_theme(source_dir: Path, theme_dir: Path, preview: Path = DEFAULT_PREVI
             preview.is_file()
             and _semantic_image(preview) == _semantic_image(generated_preview)
         )
-    changed = sorted(set(actual) ^ set(expected))
-    changed.extend(
-        path for path in sorted(set(actual) & set(expected)) if actual[path] != expected[path]
-    )
+    changed = _changed_paths(actual, expected)
     if changed:
         print("sprite assets are out of date:", file=sys.stderr)
         for path in dict.fromkeys(changed):
             print(f"  - {path.as_posix()}", file=sys.stderr)
     if not preview_matches:
         print(f"sprite contact sheet is out of date: {preview}", file=sys.stderr)
-    if changed or not preview_matches:
+    bundled_changed: list[Path] = []
+    bundled_errors: list[str] = []
+    if bundled_theme_dir is not None:
+        bundled_errors = validate_theme(bundled_theme_dir)
+        if bundled_errors:
+            print("bundled package-data theme is invalid:", file=sys.stderr)
+            for error in bundled_errors[:12]:
+                print(f"  - {error}", file=sys.stderr)
+        else:
+            bundled_changed = _changed_paths(
+                _byte_files(theme_dir),
+                _byte_files(bundled_theme_dir),
+            )
+            if bundled_changed:
+                print("bundled package-data theme is out of date:", file=sys.stderr)
+                for path in bundled_changed:
+                    print(f"  - {path.as_posix()}", file=sys.stderr)
+    if changed or not preview_matches or bundled_errors or bundled_changed:
         return 1
     print("sprite assets are up to date")
     return 0
@@ -593,15 +743,44 @@ def check_theme(source_dir: Path, theme_dir: Path, preview: Path = DEFAULT_PREVI
 
 def write_theme() -> None:
     """Backward-compatible entry point used by local tooling."""
-    columns = compile_theme(DEFAULT_SOURCE, DEFAULT_THEME)
+    columns = compile_theme(
+        DEFAULT_SOURCE,
+        DEFAULT_THEME,
+        usage_source_dir=DEFAULT_USAGE_SOURCE,
+    )
     write_preview(columns, DEFAULT_PREVIEW)
+    sync_bundled_theme(DEFAULT_THEME, DEFAULT_BUNDLED_THEME)
+
+
+def _resolved_bundled_target(
+    theme_dir: Path,
+    explicit_target: Path | None,
+) -> Path | None:
+    if explicit_target is not None:
+        return explicit_target
+    if theme_dir.resolve() == DEFAULT_THEME.resolve():
+        return DEFAULT_BUNDLED_THEME
+    return None
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="verify committed assets")
     parser.add_argument("--source-dir", type=Path, default=DEFAULT_SOURCE)
+    parser.add_argument(
+        "--usage-source-dir",
+        type=Path,
+        default=DEFAULT_USAGE_SOURCE,
+    )
     parser.add_argument("--theme-dir", type=Path, default=DEFAULT_THEME)
+    parser.add_argument(
+        "--bundled-theme-dir",
+        type=Path,
+        help=(
+            "package-data mirror target; defaults to the in-package theme only "
+            "when --theme-dir is the canonical repository theme"
+        ),
+    )
     parser.add_argument("--preview", type=Path, default=DEFAULT_PREVIEW)
     parser.add_argument(
         "--force",
@@ -613,20 +792,41 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    bundled_theme_dir = _resolved_bundled_target(
+        args.theme_dir,
+        args.bundled_theme_dir,
+    )
     try:
-        _validate_output_paths(args.source_dir, args.theme_dir, args.preview)
+        _validate_output_paths(
+            args.source_dir,
+            args.theme_dir,
+            args.preview,
+            usage_source_dir=args.usage_source_dir,
+            bundled_theme_dir=bundled_theme_dir,
+        )
         if args.check:
-            return check_theme(args.source_dir, args.theme_dir, args.preview)
+            return check_theme(
+                args.source_dir,
+                args.theme_dir,
+                args.preview,
+                usage_source_dir=args.usage_source_dir,
+                bundled_theme_dir=bundled_theme_dir,
+            )
         columns = compile_theme(
             args.source_dir,
             args.theme_dir,
+            usage_source_dir=args.usage_source_dir,
             replace_unmanaged=args.force,
         )
         write_preview(columns, args.preview)
+        if bundled_theme_dir is not None:
+            sync_bundled_theme(args.theme_dir, bundled_theme_dir)
     except (SpriteCompileError, OSError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"wrote {args.theme_dir}")
+    if bundled_theme_dir is not None:
+        print(f"wrote {bundled_theme_dir}")
     print(f"wrote {args.preview}")
     return 0
 

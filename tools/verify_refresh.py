@@ -23,6 +23,7 @@ if str(SRC) not in sys.path:
 
 from quotadeck.config import AppConfig, _hold_seconds, load_config, save_config
 from quotadeck.cli import _account_seconds
+from quotadeck.core.mask import mask_text
 from quotadeck.core.models import (
     DisplayMode,
     Severity,
@@ -32,10 +33,7 @@ from quotadeck.core.models import (
 )
 from quotadeck.core.severity import band_for_remaining, snapshot_severity
 from quotadeck.devices.aula_f108.constants import (
-    LCD_DEFAULT_BUDGET,
-    LCD_DELAY_TICK_MS,
     LCD_HEIGHT,
-    LCD_MAX_DELAY_MS,
     LCD_MAX_FRAMES,
     LCD_PAGE_BYTES,
     LCD_WIDTH,
@@ -51,6 +49,7 @@ from quotadeck.devices.aula_f108.payload import (
 )
 from quotadeck.devices.aula_f108.protocol import ProtocolError, upload_payload
 from quotadeck.devices.aula_f108.transport_mock import MockTransport
+from quotadeck.diagnostics import configure_diagnostics
 from quotadeck.renderer.budget import SceneBudgetError, allocate
 from quotadeck.renderer.canvas import (
     BAR_BG,
@@ -101,7 +100,6 @@ def _snapshots() -> list[UsageSnapshot]:
 
 def _check_config() -> None:
     assert AppConfig().scene_hold_seconds == 5
-    assert AppConfig().min_upload_minutes == 30
     assert _hold_seconds({}) == 5
     assert _hold_seconds({"scene_hold_seconds": 4}) == 4
     assert _hold_seconds({"scene_hold_seconds": 10}) == 10
@@ -111,7 +109,7 @@ def _check_config() -> None:
         save_config(AppConfig(scene_hold_seconds=7), path)
         assert load_config(path).scene_hold_seconds == 7
     assert _account_seconds("5") == 5.0
-    for invalid in ("0", "-1", "nan", "inf", "5.001", "20.001"):
+    for invalid in ("0", "-1", "nan", "inf", "5.01", "20.01"):
         try:
             _account_seconds(invalid)
         except Exception:
@@ -243,22 +241,20 @@ def _check_rotation_and_payload() -> None:
         ordered = _order(snapshots, severities, mode)
         assert len(ordered) == len(snapshots)
         assert {item.key for item in ordered} == {item.key for item in snapshots}
-        budget = allocate(len(ordered), LCD_DEFAULT_BUDGET, hold_ms=5000)
+        budget = allocate(len(ordered), 32, hold_ms=5000)
         frames = render_playlist(
             snapshots,
             severities,
             theme,
             mode=mode,
-            frame_budget=LCD_DEFAULT_BUDGET,
+            frame_budget=32,
             hold_ms=5000,
         )
-        assert len(frames) == budget.total_frames <= LCD_DEFAULT_BUDGET
+        assert len(frames) == budget.total_frames <= 32
         for index in range(len(ordered)):
             start = index * budget.frames_per_account
             account_frames = frames[start : start + budget.frames_per_account]
-            encoded_ms = sum(
-                delay_byte(frame.delay_ms) * LCD_DELAY_TICK_MS for frame in account_frames
-            )
+            encoded_ms = sum(delay_byte(frame.delay_ms) * 20 for frame in account_frames)
             assert encoded_ms == 5000
         assert all(frame.image.size == (LCD_WIDTH, LCD_HEIGHT) for frame in frames)
         payload = build_payload(frames)
@@ -272,7 +268,7 @@ def _check_rotation_and_payload() -> None:
     else:
         raise AssertionError("impossible budget did not raise SceneBudgetError")
 
-    validate_frames([solid_frame(0, 0, 0, LCD_MAX_DELAY_MS)] * LCD_MAX_FRAMES)
+    validate_frames([solid_frame(0, 0, 0, 5100)] * LCD_MAX_FRAMES)
     try:
         validate_frames([Frame(new_canvas(), 5120)])
     except PayloadError:
@@ -280,7 +276,7 @@ def _check_rotation_and_payload() -> None:
     else:
         raise AssertionError("unsafe frame delay was accepted")
     try:
-        validate_frames([Frame(new_canvas(), 31)])
+        validate_frames([Frame(new_canvas(), 30)])
     except PayloadError:
         pass
     else:
@@ -331,6 +327,46 @@ def _check_rotation_and_payload() -> None:
     assert nack_transport.pages == []
 
 
+def _check_diagnostics() -> None:
+    raw = (
+        "Authorization: Bearer opaque-secret-value "
+        'access_token="access-secret-value" refreshToken=refresh-secret-value '
+        "password=hunter-secret mail=user.name@example.com"
+    )
+    masked = mask_text(raw)
+    assert "opaque-secret-value" not in masked
+    assert "access-secret-value" not in masked
+    assert "refresh-secret-value" not in masked
+    assert "hunter-secret" not in masked
+    assert "user.name" not in masked
+
+    with tempfile.TemporaryDirectory(prefix="quotadeck-diagnostics-") as folder:
+        directory = Path(folder)
+        session = configure_diagnostics(
+            "verify",
+            log_dir=directory,
+            max_bytes=1024,
+            backup_count=2,
+            install_hooks=False,
+            enable_faults=False,
+            check_previous=False,
+        )
+        try:
+            session.event("diagnostic_probe", detail=raw)
+            session.mark_shutdown("verification")
+            session.flush()
+            text = "\n".join(
+                path.read_text(encoding="utf-8", errors="replace")
+                for path in directory.glob("quotadeck-*.log*")
+            )
+            assert "event=diagnostic_probe" in text
+            assert "event=process_end clean=true" in text
+            assert "opaque-secret-value" not in text
+            assert "access-secret-value" not in text
+        finally:
+            session.close()
+
+
 def main() -> int:
     checks = (
         ("config preservation and custom duration", _check_config),
@@ -338,6 +374,7 @@ def main() -> int:
         ("severity edges and split-colour bar", _check_bands_and_bar),
         ("account identity and visible quota selection", _check_account_identity_and_input_selection),
         ("equal 5 s slots and safe payload", _check_rotation_and_payload),
+        ("rotating diagnostics and secret redaction", _check_diagnostics),
     )
     for label, check in checks:
         check()

@@ -7,7 +7,6 @@ from quotadeck.config import default_theme_dir
 from quotadeck.core.models import DisplayMode
 from quotadeck.core.severity import snapshot_severity
 from quotadeck.devices.aula_f108.payload import image_to_rgb565, rgb565_to_image
-from quotadeck.devices.aula_f108.constants import LCD_DEFAULT_BUDGET
 from quotadeck.renderer.encode import write_gif
 from quotadeck.renderer.scenes import render_playlist
 from quotadeck.renderer.sprites import load_theme
@@ -25,7 +24,7 @@ def main() -> None:
         severities,
         load_theme(default_theme_dir()),
         mode=DisplayMode.FIXED,
-        frame_budget=LCD_DEFAULT_BUDGET,
+        frame_budget=32,
         hold_ms=5000,
     )
     write_gif(frames, OUT_GIF)

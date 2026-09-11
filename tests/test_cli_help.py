@@ -19,7 +19,7 @@ def test_render_help_includes_account_hold(capsys) -> None:
     assert "--mode {smart,fixed}" in output
 
 
-@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "20.001", "5.001"])
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "20.01", "5.01"])
 def test_render_hold_rejects_unsafe_values(value: str) -> None:
     with pytest.raises(argparse.ArgumentTypeError):
         _account_seconds(value)
@@ -29,4 +29,3 @@ def test_render_hold_accepts_firmware_ticks() -> None:
     assert _account_seconds("5") == 5.0
     assert _account_seconds("7.5") == 7.5
     assert _account_seconds("5.02") == 5.02
-    assert _account_seconds("5.002") == 5.002

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "quotadeck"
-version = "0.1.0"
+version = "0.2.3"
 description = "AI coding usage display for the AULA F108 Pro LCD"
 readme = "README.md"
 license = { text = "MIT" }
@@ -25,10 +25,20 @@ dev = [
 ]
 
 [project.scripts]
-quotadeck = "quotadeck.cli:main"
+quotadeck = "quotadeck.__main__:entrypoint"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+quotadeck = [
+    "bundled/themes/quotadeck-crew/theme.json",
+    "bundled/themes/quotadeck-crew/provider/codex/*.png",
+    "bundled/themes/quotadeck-crew/provider/claude/*.png",
+    "bundled/themes/quotadeck-crew/provider/cursor/*.png",
+    "bundled/themes/quotadeck-crew/provider/grok/*.png",
+    "bundled/icons/*.png",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

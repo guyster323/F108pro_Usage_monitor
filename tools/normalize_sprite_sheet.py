@@ -24,6 +24,7 @@ SHEET_SIZE = GRID * CELL_SIZE
 CONTENT_SIZE = (288, 288)
 BOTTOM_GUTTER = 16
 ALPHA_BBOX_THRESHOLD = 32
+MIN_COMPONENT_PIXELS = 32
 
 # State pairs, in source-sheet reading order.
 PAIRS = (
@@ -103,6 +104,50 @@ def _primary_alpha_box(image: Image.Image) -> tuple[int, int, int, int] | None:
     return best_box
 
 
+def _remove_tiny_alpha_islands(image: Image.Image) -> Image.Image:
+    """Drop generator/checkerboard specks without touching visible accents."""
+
+    rgba = image.convert("RGBA")
+    alpha = rgba.getchannel("A")
+    width, height = alpha.size
+    opaque = bytes(
+        255 if value >= ALPHA_BBOX_THRESHOLD else 0
+        for value in alpha.tobytes()
+    )
+    seen = bytearray(width * height)
+    keep = bytearray(opaque)
+    for start, value in enumerate(opaque):
+        if not value or seen[start]:
+            continue
+        seen[start] = 1
+        queue = deque((start,))
+        component: list[int] = []
+        while queue:
+            index = queue.popleft()
+            component.append(index)
+            x = index % width
+            y = index // width
+            for dy in (-1, 0, 1):
+                next_y = y + dy
+                if not 0 <= next_y < height:
+                    continue
+                for dx in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    next_x = x + dx
+                    if not 0 <= next_x < width:
+                        continue
+                    next_index = next_y * width + next_x
+                    if opaque[next_index] and not seen[next_index]:
+                        seen[next_index] = 1
+                        queue.append(next_index)
+        if len(component) < MIN_COMPONENT_PIXELS:
+            for index in component:
+                keep[index] = 0
+    rgba.putalpha(Image.frombytes("L", (width, height), bytes(keep)))
+    return rgba
+
+
 def normalize(source: Path, target: Path) -> None:
     if source.resolve() == target.resolve():
         raise SourceNormalizeError("source and target must be different files")
@@ -160,6 +205,7 @@ def normalize(source: Path, target: Path) -> None:
                 for edge_x in range(CELL_SIZE):
                     alpha_pixels[edge_x, edge_y] = 0
             local.putalpha(alpha)
+            local = _remove_tiny_alpha_islands(local)
             result.alpha_composite(local, (column * CELL_SIZE, row * CELL_SIZE))
 
     for row in range(GRID):

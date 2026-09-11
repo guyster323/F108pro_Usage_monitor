@@ -5,13 +5,12 @@ from math import ceil
 
 from quotadeck.devices.aula_f108.constants import (
     LCD_DEFAULT_BUDGET,
-    LCD_DELAY_TICK_MS,
     LCD_MAX_DELAY_MS,
     LCD_MAX_FRAMES,
     LCD_SOFT_CAP,
 )
 
-TICK_MS = LCD_DELAY_TICK_MS
+TICK_MS = 20
 DEFAULT_ACCOUNT_HOLD_MS = 5000
 DESIRED_FRAMES_PER_ACCOUNT = 8
 
@@ -70,7 +69,7 @@ def allocate(
     frames_per_account = max(minimum_frames, frames_per_account)
     delays = _distribute_ticks(total_ticks, frames_per_account)
     if any(delay > LCD_MAX_DELAY_MS for delay in delays):
-        raise SceneBudgetError("a generated frame delay exceeds the 510 ms firmware limit")
+        raise SceneBudgetError("a generated frame delay exceeds the 5100 ms firmware limit")
     return SceneBudget(
         account_hold_ms=account_hold_ms,
         frames_per_account=frames_per_account,

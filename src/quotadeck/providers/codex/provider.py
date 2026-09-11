@@ -6,7 +6,11 @@ from pathlib import Path
 from quotadeck.core.models import AccountRef, UsageSnapshot
 from quotadeck.providers.base import Provider
 from quotadeck.providers.codex.appserver_rpc import CodexRPCError, fetch_app_server
-from quotadeck.providers.codex.auth import discover_codex_accounts, read_auth
+from quotadeck.providers.codex.auth import (
+    discover_codex_accounts,
+    process_api_key_applies_to,
+    read_auth,
+)
 from quotadeck.providers.codex.oauth_usage import CodexUsageError, fetch_wham
 
 
@@ -15,7 +19,11 @@ class CodexProvider(Provider):
     def discover(self) -> list[AccountRef]:
         return discover_codex_accounts()
     def fetch(self, account: AccountRef) -> UsageSnapshot:
-        auth = read_auth(Path(account.source_path))
+        home = Path(account.source_path)
+        auth = read_auth(
+            home,
+            include_process_environment=process_api_key_applies_to(home),
+        )
         if auth is None:
             return UsageSnapshot(
                 provider="codex",
@@ -26,6 +34,18 @@ class CodexProvider(Provider):
                 status="offline",
                 fetched_at=datetime.now(timezone.utc),
                 error="auth.json missing",
+                source_path=account.source_path,
+            )
+        if auth.is_api_key_only:
+            return UsageSnapshot(
+                provider="codex",
+                account_id=account.account_id,
+                display_name=account.display_name,
+                plan="api",
+                windows=[],
+                status="offline",
+                fetched_at=datetime.now(timezone.utc),
+                error="Quota data is unavailable for API-key accounts",
                 source_path=account.source_path,
             )
         try:

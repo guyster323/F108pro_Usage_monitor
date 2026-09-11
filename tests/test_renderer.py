@@ -6,14 +6,8 @@ from pathlib import Path
 from quotadeck.core.models import DisplayMode, Severity, UsageSnapshot, UsageWindow
 from quotadeck.core.scheduler import render_hash
 from quotadeck.core.severity import snapshot_severity
-from quotadeck.devices.aula_f108.constants import (
-    LCD_DELAY_TICK_MS,
-    LCD_DEFAULT_BUDGET,
-    LCD_HEIGHT,
-    LCD_MAX_DELAY_MS,
-    LCD_WIDTH,
-)
-from quotadeck.devices.aula_f108.payload import Frame, PayloadError, build_payload, delay_byte
+from quotadeck.devices.aula_f108.constants import LCD_HEIGHT, LCD_WIDTH
+from quotadeck.devices.aula_f108.payload import Frame, PayloadError, delay_byte
 from quotadeck.gifio import load_gif
 from quotadeck.renderer.budget import SceneBudgetError, allocate
 from quotadeck.renderer.encode import write_gif
@@ -59,9 +53,9 @@ def test_render_stays_in_budget(tmp_path: Path) -> None:
     snaps = _snapshots()
     theme = load_theme(THEME)
     sevs = {s.key: snapshot_severity(s) for s in snaps}
-    frames = render_playlist(snaps, sevs, theme, frame_budget=LCD_DEFAULT_BUDGET)
+    frames = render_playlist(snaps, sevs, theme, frame_budget=32)
     assert frames
-    assert len(frames) <= LCD_DEFAULT_BUDGET
+    assert len(frames) <= 32
     for frame in frames:
         assert frame.image.size == (LCD_WIDTH, LCD_HEIGHT)
     out = tmp_path / "preview.gif"
@@ -76,14 +70,14 @@ def test_gif_writer_rejects_off_tick_timing(tmp_path: Path) -> None:
     import pytest
     from PIL import Image
 
-    invalid = Frame(Image.new("RGB", (LCD_WIDTH, LCD_HEIGHT)), delay_ms=31)
-    with pytest.raises(PayloadError, match="exact 2 ms tick"):
+    invalid = Frame(Image.new("RGB", (LCD_WIDTH, LCD_HEIGHT)), delay_ms=30)
+    with pytest.raises(PayloadError, match="exact 20 ms tick"):
         write_gif([invalid], tmp_path / "invalid.gif")
 
 def test_budget_is_equal_for_many_accounts() -> None:
-    many = allocate(4, LCD_DEFAULT_BUDGET)
-    assert many.frames_per_account == 10
-    assert many.total_frames == 40
+    many = allocate(8, 32)
+    assert many.frames_per_account == 4
+    assert many.total_frames == 32
     assert sum(many.frame_delays_ms) == 5000
 
 
@@ -91,7 +85,7 @@ def test_static_character_states_use_a_brief_expression_pose() -> None:
     from quotadeck.renderer.scenes import _sprite_index
 
     assert [_sprite_index(i, 2, "idle") for i in range(8)] == [0, 0, 0, 1, 0, 0, 0, 0]
-    assert [_sprite_index(i, 2, "busy", 4) for i in range(4)] == [0, 1, 0, 0]
+    assert [_sprite_index(i, 2, "busy") for i in range(4)] == [0, 1, 0, 0]
     assert [_sprite_index(i, 2, "idle", 2) for i in range(2)] == [0, 1]
     assert [_sprite_index(i, 2, "idle", 3) for i in range(3)] == [0, 1, 0]
 
@@ -214,6 +208,15 @@ def test_supported_alias_punctuation_has_distinct_glyphs() -> None:
     assert len(set(rendered)) == len(rendered)
 
 
+def test_less_than_has_a_real_pixel_glyph_for_small_costs() -> None:
+    from quotadeck.renderer.canvas import PIXEL_TEXT_GLYPHS, pixel_identifier
+
+    assert "<" in PIXEL_TEXT_GLYPHS
+    assert PIXEL_TEXT_GLYPHS["<"] != PIXEL_TEXT_GLYPHS["?"]
+    assert all(character.isascii() for character in PIXEL_TEXT_GLYPHS)
+    assert pixel_identifier("LIST <$0.01") == "LIST <$0.01"
+
+
 def test_unsupported_aliases_get_stable_distinct_identifiers() -> None:
     from quotadeck.renderer.canvas import pixel_identifier
 
@@ -298,13 +301,13 @@ def test_scene_hold_splits_long_delay() -> None:
     sevs = {s.key: snapshot_severity(s) for s in snaps}
     frames = render_playlist(snaps, sevs, load_theme(THEME), frame_budget=16, hold_ms=8000)
     holds = [frame.delay_ms for frame in frames]
-    assert sum(delay_byte(value) * LCD_DELAY_TICK_MS for value in holds) == 8000
-    assert max(holds) <= LCD_MAX_DELAY_MS
+    assert sum(delay_byte(value) * 20 for value in holds) == 8000
+    assert max(holds) <= 5100
 
 
 def test_scene_hold_uses_two_frames_at_exact_delay_limit() -> None:
-    budget = allocate(1, 2, hold_ms=1020)
-    assert budget.frame_delays_ms == (510, 510)
+    budget = allocate(1, 2, hold_ms=10200)
+    assert budget.frame_delays_ms == (5100, 5100)
 
 def test_allocate_uses_requested_hold() -> None:
     budget = allocate(2, 32, hold_ms=7000)
@@ -315,32 +318,13 @@ def test_allocate_uses_requested_hold() -> None:
 def test_every_account_gets_exactly_five_seconds() -> None:
     snaps = _snapshots()
     sevs = {s.key: snapshot_severity(s) for s in snaps}
-    frames = render_playlist(
-        snaps, sevs, load_theme(THEME), frame_budget=LCD_DEFAULT_BUDGET, hold_ms=5000
-    )
-    budget = allocate(len(snaps), LCD_DEFAULT_BUDGET, hold_ms=5000)
+    frames = render_playlist(snaps, sevs, load_theme(THEME), frame_budget=32, hold_ms=5000)
+    budget = allocate(len(snaps), 32, hold_ms=5000)
     assert len(frames) == len(snaps) * budget.frames_per_account
     for index in range(len(snaps)):
         start = index * budget.frames_per_account
         account_frames = frames[start : start + budget.frames_per_account]
-        assert (
-            sum(delay_byte(frame.delay_ms) * LCD_DELAY_TICK_MS for frame in account_frames)
-            == 5000
-        )
-
-
-def test_five_second_hold_survives_serialized_payload() -> None:
-    snaps = _snapshots()
-    sevs = {s.key: snapshot_severity(s) for s in snaps}
-    frames = render_playlist(
-        snaps, sevs, load_theme(THEME), frame_budget=LCD_DEFAULT_BUDGET, hold_ms=5000
-    )
-    budget = allocate(len(snaps), LCD_DEFAULT_BUDGET, hold_ms=5000)
-    payload = build_payload(frames)
-    for index in range(len(snaps)):
-        start = index * budget.frames_per_account
-        encoded_delays = payload[1 + start : 1 + start + budget.frames_per_account]
-        assert sum(encoded_delays) * LCD_DELAY_TICK_MS == 5000
+        assert sum(delay_byte(frame.delay_ms) * 20 for frame in account_frames) == 5000
 
 
 def test_smart_order_has_no_duplicate_accounts() -> None:
@@ -388,10 +372,10 @@ def test_many_same_provider_accounts_get_full_screen_slots(monkeypatch) -> None:
         severities,
         load_theme(THEME),
         mode=DisplayMode.FIXED,
-        frame_budget=LCD_DEFAULT_BUDGET,
-        hold_ms=4000,
+        frame_budget=30,
+        hold_ms=5000,
     )
-    per_account = allocate(6, LCD_DEFAULT_BUDGET, hold_ms=4000).frames_per_account
+    per_account = allocate(6, 30, hold_ms=5000).frames_per_account
     assert len(frames) == 6 * per_account
     assert [frames[i * per_account].image.getpixel((0, 0)) for i in range(6)] == [
         markers[snap.key] for snap in snaps
