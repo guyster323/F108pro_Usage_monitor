@@ -37,6 +37,11 @@ prefixed buffers, drops `buffer[0]` so the payload starts at
 `04 18 00 01`, pads only the missing trailing byte for count 64, and
 still rejects shorter reads.
 
+On 2026-09-12, the connected F108 Pro accepted 8 frames (520,192 bytes)
+through the default Win32 backend, with all 127 page ACKs and the final
+apply ACK verified. This check used a synthetic Cursor export, not real
+billing data. See the [hardware verification record](docs/WIN32_LCD_VERIFICATION.md).
+
 > New here? Follow **Getting started**. Protocol, themes, and security live under [docs/](docs/).
 ## Architecture
 

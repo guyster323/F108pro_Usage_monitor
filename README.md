@@ -27,6 +27,8 @@
 
 Windows 기본 auto/Win32 전송은 `GET_FEATURE`가 65바이트 또는 64바이트를 돌려줘도 둘 다 리포트 ID(`buffer[0]`)를 제거하고 페이로드 접두사 `04 18 00 01`을 만들며, 64바이트 카운트는 부족한 마지막 바이트만 패딩하고, 그보다 짧은 읽기는 거절합니다.
 
+2026-09-12 연결된 F108 Pro에서 기본 Win32로 8프레임·520,192바이트를 전송하고 127개 페이지와 최종 적용 명령의 ACK를 확인했습니다. 검증에는 실제 청구액이 아닌 합성 Cursor export를 사용했습니다. [실기기 검증 기록](docs/WIN32_LCD_VERIFICATION.md)
+
 <p align="center">
   <img src="docs/cumulative-coin-preview.png" alt="Display 비용 환산 행의 코인 픽셀 아이콘" width="480">
 </p>
