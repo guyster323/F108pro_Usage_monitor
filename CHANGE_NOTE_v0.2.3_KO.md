@@ -1,6 +1,7 @@
 # QuotaDeck v0.2.3 변경 노트
 
 작성일: 2026-09-11
+수정일: 2026-09-12
 
 ## 이번 변경
 
@@ -10,6 +11,13 @@
 - 누적 Display 미리보기와 collector 문서를 README 및 `docs/`에 연결했습니다.
 - 입력 검증, refresh 안전성, 진단/HTTP 보안 경로와 회귀 테스트를 보강했습니다.
 
+## 2026-09-12 정규화 엔진·LCD 연동
+
+- 리뷰에서 `collect_normalized_usage` Codex 계정 합계가 패치 전 `UsageService` analytics 합계와 일치함을 확인했습니다. Codex 로컬 스캐너의 기존 delta 재조정은 유지했고, Codex 이벤트 롤업은 바꾸지 않았습니다.
+- Grok `grok usage` 세션 총계는 계정/제공자/전체 합계에서 증분 롤업 대상이 아닙니다. resume/fork 겹침이 있어 비용은 미지(`None`)로 두고, 계정 전체·일별 원장으로 주장하지 않습니다.
+- `CumulativeUsageService` → `QuotaDeckRuntime` → renderer → F108 LCD 누적 경로가 정규화 엔진을 소비합니다. Cursor attributable export의 가상 API 정가(`LIST`)가 키보드에 도달하고, Grok 세션 총계는 일별 THIS/AVG로 올라가지 않습니다.
+- 커스텀 엔드포인트 가격은 계속 `N/A`입니다. unknown을 0으로 만들지 않으며 자격 증명은 노출하지 않습니다.
+
 ## Display 이미지
 
 ![누적 Usage 비용 환산 행의 코인 아이콘](docs/cumulative-coin-preview.png)
@@ -18,7 +26,7 @@
 
 ## 검증
 
-- pytest: **377 passed, 1 skipped**
+- pytest: **421 passed, 1 skipped** (2026-09-12 정규화 엔진·LCD 연동 후)
 - Win32 transport unittest: **12 passed**
 - `compileall`, 문서/예산/스프라이트/릴리스 검사 통과
 

@@ -25,6 +25,14 @@ retained on this device**, and uploads a 240×135 RGB565 playlist to the AULA
 F108 Pro LCD. Credentials and conversation content stay with the official CLI
 or app.
 
+**v0.2.3:** Review verified that existing Codex local delta reconciliation
+already matches UsageService analytics totals; this patch preserves that
+path and does not change Codex event rollup. The actual fixes are safe
+Grok session-inventory aggregation (not an account ledger) and wiring
+the normalized engine into the F108 cumulative LCD path, so Cursor
+attributable exports can show hypothetical API `LIST` cost while Grok
+session totals stay off the daily THIS/AVG card.
+
 > New here? Follow **Getting started**. Protocol, themes, and security live under [docs/](docs/).
 ## Architecture
 
@@ -93,10 +101,10 @@ fabricated measured zero.
 
 | Service | Cumulative source | Local retained analysis | Selected-period LCD cost |
 | --- | --- | --- | --- |
-| Codex | Local `sessions` and `archived_sessions` JSONL | Supported | `LIST` equivalent only with an explicit API-key signal |
-| Claude Code | Local `projects/**/*.jsonl` response metadata | Supported | `LIST` equivalent only with an explicit API-key signal |
-| Cursor | N/A unless an attributable token-stats / server Usage export exists | Conditional | N/A |
-| Grok Build | `grok usage` exposes individual session totals only | Account card is N/A by default; analysis is conditional on separately supplied, retained external OTel v1 events | N/A |
+| Codex | Local `sessions` and `archived_sessions` JSONL | Supported | Hypothetical API `LIST` (API-key or subscription; not reported spend). Custom endpoints stay `N/A` |
+| Claude Code | Local `projects/**/*.jsonl` response metadata | Supported | Hypothetical API `LIST` (API-key or subscription; not reported spend). Custom endpoints stay `N/A` |
+| Cursor | N/A unless an attributable token-stats / server Usage export exists | Conditional | Hypothetical API `LIST` when an attributable export exists; never mixed with reported spend |
+| Grok Build | `grok usage` exposes individual session totals only | Account card is N/A by default; daily analysis is conditional on separately supplied, retained external OTel v1 events | Session totals are not shown as daily THIS/AVG |
 
 Cursor still requires an admin ledger or a trustworthy export for account
 scope. 0.2.3 never invents Cursor tokens from `state.vscdb`; it enables the
@@ -150,8 +158,9 @@ reacts with five surprise states:
 
 Cost uses the bundled snapshot of official API list prices dated 2026-09-11.
 Choose **KRW** or **USD** in settings. KRW conversion uses the manually entered
-rate (default **1,400 KRW/USD**); QuotaDeck never fetches or updates an exchange
-rate from the internet. `THIS` and `AVG` are independently calculated from the
+rate (default **1,400 KRW/USD**) on the LCD path; `quotadeck usage-engine`
+can also apply a fetched Treasury quote with last-known-good then manual
+fallback. `THIS` and `AVG` are independently calculated from the
 actual model/token mix in those periods, but the pair is all-or-nothing: if
 either side cannot be priced completely, both are `N/A`. These are list-price
 equivalents of observed tokens, not actual spend or an invoice; the current
@@ -159,9 +168,10 @@ API-key signal does not prove each historical session's billing route.
 `quotadeck prices` includes snapshot rows for OpenAI, Anthropic, Cursor, and
 xAI; a reference price row does not mean that an account usage ledger is
 implemented for that service.
-It is not a live price lookup. Subscription, mixed/ambiguous authentication,
-a custom endpoint, an unknown model/token category, or partial history makes
-the entire amount `N/A`; QuotaDeck never displays a misleading partial price.
+It is not a live price lookup. A custom endpoint, an unknown model/token
+category, or partial history makes the entire amount `N/A`; QuotaDeck never
+displays a misleading partial price. Subscription history may show the same
+hypothetical `LIST` equivalent when coverage is complete.
 
 ## Getting started (Windows 11)
 

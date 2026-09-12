@@ -8,6 +8,7 @@ from pathlib import Path
 
 from quotadeck.core.models import AccountRef
 from quotadeck.usage.cache import UsageDatasetCache
+from quotadeck.usage.collectors import CollectorSettings
 from quotadeck.usage.models import (
     ModelUsage,
     PeriodUsageComparison,
@@ -428,3 +429,137 @@ def test_cumulative_facade_marks_cursor_unsupported(tmp_path: Path) -> None:
     assert not snapshot.available
     assert snapshot.status == "unsupported"
     assert snapshot.source_label == "ADMIN API REQUIRED"
+
+
+def _cursor_history_export(path: Path, *, days: int = 12) -> Path:
+    today = date.today()
+    lines = [
+        "Date,Model,Input (w/ Cache Write),Input (w/o Cache Write),"
+        "Cache Read,Output Tokens,Total Tokens,Cost,Cost to you"
+    ]
+    for offset in range(days - 1, -1, -1):
+        day = today - timedelta(days=offset)
+        lines.append(
+            f"{day.isoformat()},grok-4.6,1000,1000,0,500,1500,$0.25,$0.10"
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def test_cumulative_lcd_path_consumes_engine_cursor_cost(tmp_path: Path) -> None:
+    export = _cursor_history_export(tmp_path / "usage.work.csv")
+    account = AccountRef(
+        provider="cursor",
+        account_id="work",
+        display_name="WORK",
+        source_path=str(tmp_path / "state.vscdb"),
+        extra={"pricing_scope": "official", "auth_mode": "oauth"},
+    )
+    service = CumulativeUsageService()
+    service.loader.collector = CollectorSettings(cursor_export_path=export)
+    snapshot = service.snapshot(account)
+
+    assert snapshot.available
+    assert snapshot.source_label == "CURSOR EXPORT"
+    assert snapshot.this_tokens == 1500
+    assert snapshot.this_cost_usd is not None
+    assert snapshot.average_cost_usd is not None
+    assert snapshot.cost_display is not None
+    assert snapshot.cost_display.startswith("LIST")
+
+
+def test_cumulative_lcd_path_does_not_turn_grok_sessions_into_daily_totals(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from quotadeck.usage.grok import (
+        GrokUsageScan,
+        grok_session_record,
+        parse_grok_usage_payload,
+    )
+    from quotadeck.usage.models import UsageCoverage, UsageDataset, UsageSourceKind
+
+    payload = {
+        "sessionId": "session-a",
+        "updatedAt": "2026-09-11T12:34:56Z",
+        "session": {
+            "inputTokens": 120,
+            "outputTokens": 30,
+            "totalTokens": 150,
+            "cachedReadTokens": 0,
+            "cacheCreationTokens": 0,
+            "reasoningTokens": 5,
+            "modelCalls": 1,
+            "turnCount": 0,
+            "primaryModelId": "grok-4.6",
+            "costUsdTicks": 25_000_000_000,
+        },
+        "turns": [],
+    }
+    record = grok_session_record(parse_grok_usage_payload(payload), account="g1")
+    coverage = UsageCoverage(
+        provider="grok",
+        source_kind=UsageSourceKind.LOCAL_OBSERVED,
+        source_label="GROK USAGE (SESSION ONLY)",
+        location_hint="sessions",
+        scanned_at=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr(
+        "quotadeck.usage.engine.scan_grok_session_usage",
+        lambda **_kwargs: GrokUsageScan(
+            sessions=(),
+            dataset=UsageDataset((), (coverage,)),
+            session_records=(record,),
+        ),
+    )
+    account = AccountRef(
+        provider="grok",
+        account_id="g1",
+        display_name="GROK",
+        source_path=str(tmp_path),
+    )
+    snapshot = CumulativeUsageService().snapshot(account)
+
+    assert snapshot.report is None
+    assert snapshot.this_tokens is None
+    assert snapshot.today_tokens is None
+    assert snapshot.total_tokens is None
+    assert snapshot.this_cost_usd is None
+    assert snapshot.average_cost_usd is None
+    assert snapshot.status == "unsupported"
+    assert snapshot.source_label == "GROK USAGE (SESSION ONLY)"
+    assert "account ledger" in (snapshot.error or "")
+
+
+def test_runtime_cumulative_poll_renders_engine_cursor_cost(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from quotadeck.config import AppConfig
+    from quotadeck.core.models import MetricMode
+    from quotadeck.core.scheduler import QuotaDeckRuntime
+
+    export = _cursor_history_export(tmp_path / "usage.work.csv")
+    account = AccountRef(
+        provider="cursor",
+        account_id="work",
+        display_name="WORK",
+        source_path=str(tmp_path / "state.vscdb"),
+        extra={"pricing_scope": "official", "auth_mode": "oauth"},
+    )
+    runtime = QuotaDeckRuntime(
+        AppConfig(
+            metric_mode=MetricMode.CUMULATIVE,
+            cumulative_period=UsagePeriod.DAILY,
+        ),
+        mock=True,
+    )
+    runtime.cumulative.loader.collector = CollectorSettings(cursor_export_path=export)
+    monkeypatch.setattr(runtime, "selected_accounts", lambda: [account])
+
+    snapshots = runtime.poll()
+    assert len(snapshots) == 1
+    assert snapshots[0].this_cost_usd is not None
+    frames = runtime.build_frames(snapshots)
+    assert frames
+    assert runtime.mock is True

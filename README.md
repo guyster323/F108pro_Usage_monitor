@@ -23,6 +23,8 @@
 
 누적 Usage collector와 기간·모델별 토큰 집계를 추가하고, 근거가 없는 Cursor 토큰 추정은 `N/A`로 제한했습니다. Display 비용 환산 행의 좌측 시작에는 코인 픽셀 아이콘을 배치했습니다.
 
+리뷰에서 Codex 로컬 스캐너의 기존 delta 재조정이 정규화 엔진 합계와 일치함을 확인·유지했습니다. Codex 이벤트 롤업은 바꾸지 않았습니다. 실제 수정은 Grok 세션 총계를 계정 원장처럼 더하지 않는 것과, 누적 LCD가 정규화 엔진을 소비해 Cursor의 가상 API 정가(`LIST`)를 표시하고 Grok 세션 총계는 일별 THIS/AVG로 쓰지 않는 것입니다.
+
 <p align="center">
   <img src="docs/cumulative-coin-preview.png" alt="Display 비용 환산 행의 코인 픽셀 아이콘" width="480">
 </p>
@@ -97,10 +99,10 @@ Discovery (CLI / App) → 계정 선택 → Providers / 로컬 기록 → quota 
 
 | 서비스 | 누적 데이터 출처 | 기간별 토큰·GUI 모델·최대 365일 | LCD 비용 |
 | --- | --- | --- | --- |
-| Codex | 로컬 `sessions`, `archived_sessions` JSONL | 지원 | 명시적 API-key 신호일 때만 `LIST` 환산 |
-| Claude Code | 로컬 `projects/**/*.jsonl` 응답 메타데이터 | 지원 | 명시적 API-key 신호일 때만 `LIST` 환산 |
-| Cursor | 기본 N/A. 계정·시각이 있는 token-stats/서버 Usage export만 사용 | 조건부 | N/A |
-| Grok Build | `grok usage`는 개별 세션 총계만 제공 | 기본 계정 카드는 N/A; 별도 보존한 external OTel v1 이벤트를 공급할 때만 분석 가능 | N/A |
+| Codex | 로컬 `sessions`, `archived_sessions` JSONL | 지원 | 가상 API 정가 `LIST` (명시적 API-key 또는 구독; 보고 지출 아님). 커스텀 엔드포인트는 `N/A` |
+| Claude Code | 로컬 `projects/**/*.jsonl` 응답 메타데이터 | 지원 | 가상 API 정가 `LIST` (명시적 API-key 또는 구독; 보고 지출 아님). 커스텀 엔드포인트는 `N/A` |
+| Cursor | 기본 N/A. 계정·시각이 있는 token-stats/서버 Usage export만 사용 | 조건부 | export가 있으면 가상 API 정가 `LIST`. 보고 지출과 섞지 않음 |
+| Grok Build | `grok usage`는 개별 세션 총계만 제공 | 기본 계정 카드는 N/A; 별도 보존한 external OTel v1 이벤트를 공급할 때만 일별 분석 가능 | 세션 총계는 일별 THIS/AVG로 표시하지 않음 |
 
 Cursor의 정확한 계정 범위 누적량에는 관리자 API 또는 신뢰할 수 있는
 export가 필요합니다. 0.2.3는 `state.vscdb`로 토큰을 추정하지 않고,
@@ -150,15 +152,14 @@ THIS   AVG          THIS   AVG
 
 비용은 2026-09-11 공식 API 정가의 내장 스냅샷으로 계산한 **정가 환산치**입니다.
 선택 기간의 `THIS`와 `AVG`를 모두 완전하게 계산할 수 있을 때만 두 값을 함께
-표시합니다. 현재 API-key 신호는 표시 여부를 정할 뿐 과거
-세션의 과금 경로를 증명하지 않으므로 실제 지출액이나 청구서로 보지 마세요.
+표시합니다. 실제 지출액이나 청구서로 보지 마세요. 구독 이력도 토큰·모델
+범주가 완전하면 같은 가상 `LIST` 환산을 표시할 수 있습니다. 커스텀 엔드포인트,
+알 수 없는 모델/토큰 범주, partial 기록은 `THIS`와 `AVG` 모두 `--`(미산정)입니다.
 `quotadeck prices`는 OpenAI, Anthropic, Cursor, xAI의 snapshot 행을 보여 줍니다.
 가격 행이 있다고 해당 서비스의 계정 누적 원장이 구현됐다는 뜻은 아닙니다.
-구독·혼합/불명확한 인증, custom endpoint, 알 수 없는 모델/토큰 범주, partial 기록 중 하나라도
-있으면 일부 금액을 더하지 않고 `THIS`와 `AVG` 모두 `--`(미산정)로 둡니다. KRW/USD를
-선택할 수 있으며, 원화 환산은 기본 **1,400원/USD**의 사용자가 수정 가능한
-수동 환율을 사용합니다. 가격과 환율 모두 실시간 조회 값이나 provider 청구서가
-아닙니다.
+KRW/USD를 선택할 수 있으며, LCD 원화 환산은 기본 **1,400원/USD**의 사용자가
+수정 가능한 수동 환율을 사용합니다. `quotadeck usage-engine`은 Treasury 시세를
+조회한 뒤 last-known-good, 수동 환율 순으로 떨어집니다.
 
 ## 시작하기 (Windows 11)
 
