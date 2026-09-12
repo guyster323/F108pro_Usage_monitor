@@ -25,7 +25,7 @@
 
 리뷰에서 Codex 로컬 스캐너의 기존 delta 재조정이 정규화 엔진 합계와 일치함을 확인·유지했습니다. Codex 이벤트 롤업은 바꾸지 않았습니다. 실제 수정은 Grok 세션 총계를 계정 원장처럼 더하지 않는 것과, 누적 LCD가 정규화 엔진을 소비해 Cursor의 가상 API 정가(`LIST`)를 표시하고 Grok 세션 총계는 일별 THIS/AVG로 쓰지 않는 것입니다.
 
-Windows 기본 auto/Win32 전송은 `GET_FEATURE`가 리포트 ID 없이 64바이트만 돌려주는 HID 스택도 hidapi처럼 페이로드로 정규화하고, ACK `byte[3]`을 밀거나 버리지 않으며, 그보다 짧은 읽기는 거절합니다.
+Windows 기본 auto/Win32 전송은 `GET_FEATURE`가 65바이트 또는 64바이트를 돌려줘도 둘 다 리포트 ID(`buffer[0]`)를 제거하고 페이로드 접두사 `04 18 00 01`을 만들며, 64바이트 카운트는 부족한 마지막 바이트만 패딩하고, 그보다 짧은 읽기는 거절합니다.
 
 <p align="center">
   <img src="docs/cumulative-coin-preview.png" alt="Display 비용 환산 행의 코인 픽셀 아이콘" width="480">

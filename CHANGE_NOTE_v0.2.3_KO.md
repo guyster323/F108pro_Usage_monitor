@@ -21,7 +21,8 @@
 ## 2026-09-12 Win32 GET_FEATURE 64바이트 ABI
 
 - 연결된 AULA F108 Pro(VID `0C45` PID `800A`)에서 기본 auto/Win32 업로드가 페이지 쓰기 전 `GET_FEATURE short read (64/65 bytes)`로 실패했습니다. 동일 8프레임은 hidapi로 업로드되었습니다.
-- Windows `IOCTL_HID_GET_FEATURE`는 리포트 ID를 포함한 65바이트, 또는 페이로드만 있는 64바이트를 돌려줄 수 있습니다. 64바이트는 앞 바이트를 건너뛰지 않고 hidapi처럼 정규화해 ACK `byte[3]`을 유지하고, 그보다 짧은 읽기는 거절합니다.
+- 재측정에서 기본 Win32는 count 64여도 raw 접두사가 `00 04 18 00 01 00 00 00`이었습니다. 64바이트가 페이로드만이고 `buffer[0]`부터 데이터라는 가정은 틀렸고, 원래처럼 리포트 ID를 제거해야 ACK가 `byte[3]`에 남습니다.
+- Windows `IOCTL_HID_GET_FEATURE`의 65바이트(`00` + 64 페이로드)와 64바이트(`00` + 63 페이로드) 모두 리포트 ID를 제거해 접두사 `04 18 00 01`을 만들고, 64는 부족한 마지막 바이트만 패딩하며, 64 미만 읽기는 거절합니다.
 
 ## Display 이미지
 
@@ -31,8 +32,8 @@
 
 ## 검증
 
-- pytest: **426 passed, 1 skipped** (2026-09-12 Win32 GET_FEATURE 64바이트 ABI 후)
-- Win32 transport unittest: **17 passed** (64/65바이트 정규화·짧은 읽기 거절 포함)
+- pytest: **428 passed, 1 skipped** (2026-09-12 Win32 GET_FEATURE 64/65 리포트 ID 정규화 후)
+- Win32 transport unittest: **19 passed** (관측 count 64 접두사 `00 04 18 00 01`, ACK `byte[3]`, 짧은 읽기 거절 포함)
 - `compileall`, 문서/예산/스프라이트/릴리스 검사 통과
 
 하드웨어 LCD 전송과 실제 로그인된 외부 CLI 계정의 live Usage 값은 CI에서 검증하지 않습니다.

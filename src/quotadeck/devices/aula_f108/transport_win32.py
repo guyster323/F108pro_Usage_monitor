@@ -139,20 +139,21 @@ class Win32Error(RuntimeError):
 def _normalize_feature_payload(buffer, returned: int) -> bytes:
     """Normalize ``IOCTL_HID_GET_FEATURE`` bytes to a 64-byte protocol payload.
 
-    Windows HID stacks disagree on whether the transfer count includes the
-    leading report ID:
+    Connected F108 Pro default Win32 returns count 64 with a report-ID prefix
+    (``00 04 18 00 01...``), not a payload-only buffer. Both count conventions
+    therefore drop ``buffer[0]`` so protocol ACK stays at payload ``byte[3]``:
 
     * 65 bytes: ``[report_id][64-byte payload]`` — drop the report ID.
-    * 64 bytes: the payload already starts at ``buffer[0]``. Do not skip a
-      byte, or protocol ACK ``byte[3]`` shifts and is dropped.
+    * 64 bytes: ``[report_id][63-byte payload]`` — drop the report ID, then
+      pad the unavailable trailing payload byte.
 
-    Any other count is a genuine short read. This matches hidapi's 64/65
-    handling without padding undersized reports.
+    Counts below 64 are genuine short reads.
     """
+    raw = bytes(buffer)[:returned]
     if returned == REPORT_LEN + 1:
-        return bytes(buffer)[1 : REPORT_LEN + 1]
+        return raw[1:]
     if returned == REPORT_LEN:
-        return bytes(buffer)[:REPORT_LEN]
+        return raw[1:].ljust(REPORT_LEN, b"\x00")
     raise Win32Error(
         f"GET_FEATURE short read ({returned}/{REPORT_LEN + 1} bytes)"
     )
