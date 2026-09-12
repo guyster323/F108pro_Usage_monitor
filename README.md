@@ -29,6 +29,8 @@ Windows 기본 auto/Win32 전송은 `GET_FEATURE`가 65바이트 또는 64바이
 
 2026-09-12 연결된 F108 Pro에서 기본 Win32로 8프레임·520,192바이트를 전송하고 127개 페이지와 최종 적용 명령의 ACK를 확인했습니다. 검증에는 실제 청구액이 아닌 합성 Cursor export를 사용했습니다. [실기기 검증 기록](docs/WIN32_LCD_VERIFICATION.md)
 
+스프라이트 컴파일러는 Pillow `FASTOCTREE`의 libc `qsort` 타이브레이크를 쓰지 않습니다. occupancy가 같은 색 큐브는 공간 인덱스로 순서를 고정해 Windows CI와 커밋된 104개 런타임 PNG가 같은 팔레트를 만듭니다. 런타임 아트 파일은 바꾸지 않았습니다.
+
 <p align="center">
   <img src="docs/cumulative-coin-preview.png" alt="Display 비용 환산 행의 코인 픽셀 아이콘" width="480">
 </p>

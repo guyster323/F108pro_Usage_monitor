@@ -52,9 +52,11 @@ view.
 
 The compiler alpha-trims each state pair, fits it into an `88×108` RGBA frame,
 bottom-centres the character, reduces the palette without dithering, snaps RGB
-channels to RGB565-representable values, and makes alpha binary. Generated
-files are deterministic and may be committed. CI uses `--check`; it never
-silently replaces curated source art.
+channels to RGB565-representable values, and makes alpha binary. Palette
+reduction is a FASTOCTREE clone that breaks equal-occupancy cubes by spatial
+index; Pillow's `Image.quantize(FASTOCTREE)` is not used because libc `qsort`
+is not a total order. Generated files are deterministic and may be committed.
+CI uses `--check`; it never silently replaces curated source art.
 
 Keep these invariants when revising a source:
 

@@ -20,6 +20,7 @@ jobs:
       - name: Sprite assets
         run: |
           python tools/gen_sprites.py --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git diff --exit-code -- themes/quotadeck-crew
       - name: Theme validation
         run: python -m quotadeck theme validate themes/quotadeck-crew
