@@ -25,6 +25,12 @@
 - Windows `IOCTL_HID_GET_FEATURE`의 65바이트(`00` + 64 페이로드)와 64바이트(`00` + 63 페이로드) 모두 리포트 ID를 제거해 접두사 `04 18 00 01`을 만들고, 64는 부족한 마지막 바이트만 패딩하며, 64 미만 읽기는 거절합니다.
 - 수정 후 기본 auto가 선택한 `Win32Transport`로 실기기 재검증을 완료했습니다. 8프레임·520,192바이트의 127개 페이지 ACK와 최종 apply ACK를 확인했으며, 전송·적용에는 약 17.6초가 걸렸습니다. 합성 Cursor export를 사용한 검증이며 실제 계정 청구값 검증은 아닙니다. [상세 기록](docs/WIN32_LCD_VERIFICATION.md)
 
+## 2026-09-12 GUI 시작·Windows 실행 파일
+
+- 표시 정보 콤보박스의 `self.metric` 이름이 Qt의 `QPaintDevice.metric()`을 가려 창 표시·그리기 중 TypeError를 일으키던 문제를 `metric_combo`로 수정했습니다. 격리된 이벤트 루프 회귀 테스트와 새 실행 파일의 기동 로그에서 확인했습니다. [GUI 수정 기록](docs/GUI_STARTUP_FIX.md)
+- `dist/QuotaDeck.exe`를 현재 런타임으로 다시 빌드했습니다. Win32 수정본의 실제 앱에서 기존 설정의 계정 3개·24프레임·1,556,480바이트를 전송하고 380개 페이지 및 최종 apply ACK를 확인했습니다. Codex 2개는 `ok`, Cursor는 `stale`였으며 모든 제공자의 실시간 조회 성공을 뜻하지 않습니다.
+- GUI 수정 후 USB-C 연결과 24프레임 미리보기 준비도 확인했습니다. 잠긴 Windows 화면 때문에 스크린샷 픽셀과 키보드 LCD의 육안 확인은 검증 범위에 포함하지 않았습니다.
+
 ## Display 이미지
 
 ![누적 Usage 비용 환산 행의 코인 아이콘](docs/cumulative-coin-preview.png)

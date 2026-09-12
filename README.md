@@ -169,10 +169,10 @@ KRW/USD를 선택할 수 있으며, LCD 원화 환산은 기본 **1,400원/USD**
 
 ### 실행 파일
 
-릴리스에 `QuotaDeck.exe`가 제공된 경우 Python 없이 실행할 수 있습니다. 다만
-이 UX refresh 소스 전달본에는 검증 전 바이너리를 섞지 않으므로 exe가 포함되지
-않습니다. 아래 소스 실행을 사용하거나, 검증을 마친 Windows checkout에서
-`QuotaDeck.spec`으로 새로 빌드하세요. 이전 upstream exe에는 이 변경이 없습니다.
+저장소의 [dist/QuotaDeck.exe](dist/QuotaDeck.exe)는 Python 설치 없이 실행할 수
+있습니다. 2026-09-12 Win32 LCD 전송과 GUI 시작 오류 수정을 반영해 다시 빌드하고,
+이 PC에서 앱 기동·키보드 연결·미리보기를 확인했습니다.
+직접 빌드하려면 아래 소스 실행 안내와 `QuotaDeck.spec`을 사용하세요.
 
 1. F108 Pro를 **USB-C 유선**으로 연결하고 `Fn+4`를 누릅니다.
 2. 공식 AULA 프로그램이 켜져 있으면 종료합니다.

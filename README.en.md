@@ -186,10 +186,10 @@ hypothetical `LIST` equivalent when coverage is complete.
 
 ### Windows exe
 
-A release may provide `QuotaDeck.exe` for use without Python. This UX-refresh
-source handoff intentionally excludes an unverified binary: run from source
-below, or build a fresh exe from `QuotaDeck.spec` after validation on Windows.
-An older upstream exe does not contain these changes.
+[dist/QuotaDeck.exe](dist/QuotaDeck.exe) runs without a Python installation.
+It was rebuilt on 2026-09-12 with the Win32 LCD transfer and GUI startup fixes;
+app startup, keyboard connection, and preview preparation were checked on this PC.
+To build your own copy, follow the source instructions below and use `QuotaDeck.spec`.
 
 1. Connect the F108 Pro over **USB-C** and press `Fn+4`.
 2. Close official AULA software.
