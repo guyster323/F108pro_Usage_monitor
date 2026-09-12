@@ -28,6 +28,8 @@ from quotadeck.usage.process import (
     DEFAULT_MAX_RECORDS,
 )
 
+DEFAULT_CURSOR_SYNC_TTL_SECONDS = 300.0
+
 
 COLLECTOR_SCHEMA = "quotadeck.collector.v1"
 
@@ -84,11 +86,14 @@ class CollectorSettings:
     ccusage_executable: Path | None = None
     import_path: Path | None = None
     cursor_export_path: Path | None = None
+    cursor_usage_csv_account: str | None = None
     enable_token_stats: bool = False
     enable_ccusage: bool = False
+    enable_cursor_sync: bool = False
     timeout_seconds: float = DEFAULT_COLLECTOR_TIMEOUT_SECONDS
     max_json_bytes: int = DEFAULT_MAX_JSON_BYTES
     max_records: int = DEFAULT_MAX_RECORDS
+    cursor_sync_ttl_seconds: float = DEFAULT_CURSOR_SYNC_TTL_SECONDS
 
     @classmethod
     def from_env(cls) -> CollectorSettings:
@@ -96,18 +101,28 @@ class CollectorSettings:
         ccusage = _env_file("QUOTADECK_CCUSAGE")
         imported = _env_file("QUOTADECK_COLLECTOR_IMPORT")
         cursor_export = _env_file("QUOTADECK_CURSOR_EXPORT")
+        enable_token_stats = _env_flag(
+            "QUOTADECK_ENABLE_TOKEN_STATS",
+            token_stats is not None or imported is not None,
+        )
         return cls(
             token_stats_executable=token_stats,
             ccusage_executable=ccusage,
             import_path=imported,
             cursor_export_path=cursor_export,
-            enable_token_stats=_env_flag(
-                "QUOTADECK_ENABLE_TOKEN_STATS",
-                token_stats is not None or imported is not None,
-            ),
+            cursor_usage_csv_account=_env_text("QUOTADECK_CURSOR_USAGE_CSV_ACCOUNT"),
+            enable_token_stats=enable_token_stats,
             enable_ccusage=_env_flag(
                 "QUOTADECK_ENABLE_CCUSAGE",
                 ccusage is not None,
+            ),
+            enable_cursor_sync=_env_flag(
+                "QUOTADECK_ENABLE_CURSOR_SYNC",
+                enable_token_stats,
+            ),
+            cursor_sync_ttl_seconds=_env_non_negative_float(
+                "QUOTADECK_CURSOR_SYNC_TTL_SECONDS",
+                DEFAULT_CURSOR_SYNC_TTL_SECONDS,
             ),
         )
 
@@ -143,6 +158,24 @@ def _env_file(name: str) -> Path | None:
         return None
     path = Path(raw).expanduser()
     return path if path.is_file() else None
+
+
+def _env_text(name: str) -> str | None:
+    raw = os.environ.get(name, "").strip()
+    return raw or None
+
+
+def _env_non_negative_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if value != value or value < 0 or value in {float("inf"), float("-inf")}:
+        return default
+    return value
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -538,6 +571,7 @@ def parse_quotadeck_import(
 __all__ = [
     "COLLECTOR_SCHEMA",
     "CLIENT_TO_PROVIDER",
+    "DEFAULT_CURSOR_SYNC_TTL_SECONDS",
     "CollectorAttempt",
     "CollectorName",
     "CollectorSettings",

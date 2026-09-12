@@ -22,6 +22,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import threading
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
@@ -41,15 +42,45 @@ from quotadeck.usage.models import (
     UsageObservation,
     UsageSourceKind,
 )
+from quotadeck.usage.normalized import (
+    DISCOVERED_GROK_SESSION_LIMITATIONS,
+    GROK_DISCOVERED_SESSION_SOURCE,
+    GROK_PROVIDER_AGGREGATE_SOURCE,
+    GROK_USAGE_SOURCE,
+    NormalizedUsageRecord,
+    UsageConfidence,
+    aggregate_normalized_records,
+    grok_web_unsupported_record,
+)
+from quotadeck.usage.pricing import estimate_api_equivalent_cost
 
 
 GROK_COST_TICKS_PER_USD = 10_000_000_000
+GROK_USAGE_CACHE_SCHEMA = "quotadeck.grok-usage.v1"
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 5.0
 DEFAULT_MAX_SESSIONS = 256
 DEFAULT_MAX_JSON_BYTES = 8 * 1024 * 1024
 DEFAULT_MAX_DISCOVERY_ENTRIES = 100_000
+DEFAULT_MAX_CACHE_BYTES = 256 * 1024
 MAX_GROK_USAGE_INTEGER = (1 << 63) - 1
 _SAFE_SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+_CACHE_SECRET_KEYS = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "authorization",
+        "cookie",
+        "password",
+        "secret",
+        "token",
+        "access_token",
+        "refresh_token",
+        "prompt",
+        "transcript",
+        "message",
+        "content",
+    }
+)
 
 
 class GrokCapability(str, Enum):
@@ -80,6 +111,7 @@ class GrokCumulativeSupport:
         "One-year coverage depends entirely on retained collector records.",
         "Local session directories are not proof of the currently signed-in account.",
         "OTel carries no cost metric; only persisted CLI cost ticks are exact.",
+        "grok.com consumer Web Chat is not a Grok Build cumulative source.",
     )
 
 
@@ -105,10 +137,48 @@ def _non_negative_int(value: object, field_name: str, *, required: bool) -> int:
     return value
 
 
-def _optional_non_negative_int(value: object, field_name: str) -> int | None:
+def _official_int(
+    raw: Mapping[str, Any],
+    name: str,
+    *,
+    required: bool = False,
+) -> int:
+    if name not in raw:
+        if required:
+            raise GrokUsageFormatError(f"missing {name}")
+        return 0
+    return _non_negative_int(raw[name], name, required=True)
+
+
+def reported_cost_ticks(value: object) -> int | None:
+    """Keep only strictly positive tick counts.  0/negative means unreported."""
+
     if value is None:
         return None
-    return _non_negative_int(value, field_name, required=True)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise GrokUsageFormatError("costUsdTicks must be a bounded integer")
+    if value <= 0:
+        return None
+    if value > MAX_GROK_USAGE_INTEGER:
+        raise GrokUsageFormatError("costUsdTicks must be a bounded non-negative integer")
+    return value
+
+
+def _optional_bool(raw: Mapping[str, Any], name: str) -> bool:
+    value = raw.get(name)
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise GrokUsageFormatError(f"{name} must be a boolean")
+    return value
+
+
+def _optional_model_id(value: object, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise GrokUsageFormatError(f"{field_name} must be a non-empty string")
+    return value.strip()
 
 
 def _parse_rfc3339(value: object, field_name: str) -> datetime:
@@ -125,25 +195,10 @@ def _parse_rfc3339(value: object, field_name: str) -> datetime:
     return parsed
 
 
-def _aliased_int(
-    raw: Mapping[str, Any],
-    names: tuple[str, ...],
-    *,
-    required: bool = False,
-) -> int:
-    """Read a versioned spelling without silently accepting conflicts."""
-
-    present = [(name, raw[name]) for name in names if name in raw]
-    if not present:
-        if required:
-            raise GrokUsageFormatError(f"missing {names[0]}")
-        return 0
-    values = {
-        _non_negative_int(value, name, required=True) for name, value in present
-    }
-    if len(values) != 1:
-        raise GrokUsageFormatError(f"conflicting aliases for {names[0]}")
-    return values.pop()
+def _optional_rfc3339(value: object, field_name: str) -> datetime | None:
+    if value is None:
+        return None
+    return _parse_rfc3339(value, field_name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +218,9 @@ class GrokUsageSummary:
     model_calls: int = 0
     turn_count: int = 0
     cost_usd_ticks: int | None = None
+    cost_is_partial: bool = False
+    usage_is_incomplete: bool = False
+    primary_model_id: str | None = None
 
     @property
     def tokens(self) -> TokenUsage:
@@ -181,7 +239,11 @@ class GrokUsageSummary:
 
     @property
     def cost_usd(self) -> Decimal | None:
-        if self.cost_usd_ticks is None:
+        if (
+            self.cost_usd_ticks is None
+            or self.cost_is_partial
+            or self.usage_is_incomplete
+        ):
             return None
         return Decimal(self.cost_usd_ticks) / Decimal(GROK_COST_TICKS_PER_USD)
 
@@ -189,18 +251,12 @@ class GrokUsageSummary:
 def _parse_summary(raw: object, field_name: str) -> GrokUsageSummary:
     if not isinstance(raw, Mapping):
         raise GrokUsageFormatError(f"{field_name} must be an object")
-    input_tokens = _aliased_int(raw, ("inputTokens",), required=True)
-    output_tokens = _aliased_int(raw, ("outputTokens",), required=True)
-    total_tokens = _aliased_int(raw, ("totalTokens",), required=True)
-    cached_read = _aliased_int(
-        raw,
-        ("cachedReadTokens", "cacheReadTokens", "cachedInputTokens"),
-    )
-    cache_creation = _aliased_int(
-        raw,
-        ("cacheCreationTokens", "cacheWriteTokens"),
-    )
-    reasoning = _aliased_int(raw, ("reasoningTokens",))
+    input_tokens = _official_int(raw, "inputTokens", required=True)
+    output_tokens = _official_int(raw, "outputTokens", required=True)
+    total_tokens = _official_int(raw, "totalTokens", required=True)
+    cached_read = _official_int(raw, "cachedReadTokens")
+    cache_creation = _official_int(raw, "cacheCreationTokens")
+    reasoning = _official_int(raw, "reasoningTokens")
     if cached_read + cache_creation > input_tokens:
         raise GrokUsageFormatError(
             f"{field_name} cache tokens exceed inclusive inputTokens"
@@ -213,6 +269,11 @@ def _parse_summary(raw: object, field_name: str) -> GrokUsageSummary:
         raise GrokUsageFormatError(
             f"{field_name} totalTokens does not equal inputTokens + outputTokens"
         )
+    cost_is_partial = _optional_bool(raw, "costIsPartial")
+    usage_is_incomplete = _optional_bool(raw, "usageIsIncomplete")
+    ticks = reported_cost_ticks(raw.get("costUsdTicks"))
+    if cost_is_partial or usage_is_incomplete:
+        ticks = None
     return GrokUsageSummary(
         inclusive_input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -220,10 +281,13 @@ def _parse_summary(raw: object, field_name: str) -> GrokUsageSummary:
         cached_read_tokens=cached_read,
         cache_creation_tokens=cache_creation,
         reasoning_tokens=reasoning,
-        model_calls=_aliased_int(raw, ("modelCalls",)),
-        turn_count=_aliased_int(raw, ("turnCount",)),
-        cost_usd_ticks=_optional_non_negative_int(
-            raw.get("costUsdTicks"), f"{field_name}.costUsdTicks"
+        model_calls=_official_int(raw, "modelCalls"),
+        turn_count=_official_int(raw, "turnCount"),
+        cost_usd_ticks=ticks,
+        cost_is_partial=cost_is_partial,
+        usage_is_incomplete=usage_is_incomplete,
+        primary_model_id=_optional_model_id(
+            raw.get("primaryModelId"), f"{field_name}.primaryModelId"
         ),
     )
 
@@ -259,10 +323,10 @@ def _parse_model_usage(
 
 @dataclass(frozen=True, slots=True)
 class GrokTurnUsage:
-    """One command turn.  It intentionally has no synthetic timestamp."""
+    """One command turn.  ``endedAt`` is the only official turn timestamp."""
 
     turn_number: int
-    prompt_id: str | None
+    ended_at: datetime | None
     summary: GrokUsageSummary
     model_totals: tuple[ModelUsage, ...] = field(default_factory=tuple)
     per_model_complete: bool = False
@@ -323,7 +387,7 @@ def parse_grok_usage_payload(
         try:
             if not isinstance(row, Mapping):
                 raise GrokUsageFormatError("turn row must be an object")
-            turn_number = _aliased_int(row, ("turnNumber",), required=True)
+            turn_number = _official_int(row, "turnNumber", required=True)
             if turn_number in seen_turn_numbers:
                 raise GrokUsageFormatError("duplicate turnNumber")
             turn_summary = _parse_summary(row, f"turns[{index}]")
@@ -332,9 +396,7 @@ def parse_grok_usage_payload(
                 f"turns[{index}]",
                 expected=turn_summary,
             )
-            prompt_id = row.get("promptId")
-            if prompt_id is not None and not isinstance(prompt_id, str):
-                raise GrokUsageFormatError("promptId must be a string when present")
+            ended_at = _optional_rfc3339(row.get("endedAt"), f"turns[{index}].endedAt")
         except GrokUsageFormatError:
             turns_complete = False
             continue
@@ -342,7 +404,7 @@ def parse_grok_usage_payload(
         turns.append(
             GrokTurnUsage(
                 turn_number=turn_number,
-                prompt_id=prompt_id or None,
+                ended_at=ended_at,
                 summary=turn_summary,
                 model_totals=models,
                 per_model_complete=models_complete,
@@ -379,13 +441,35 @@ class GrokUsageScan:
 
     The dataset has no observations because assigning an entire session to its
     ``updatedAt`` day would fabricate a daily history.  Consumers may show the
-    individual ``sessions`` table, but must not sum it into an account card.
+    individual ``sessions`` table, but must not treat the labelled discovered
+    inventory as an account ledger.
     """
 
     sessions: tuple[GrokSessionUsage, ...]
     dataset: UsageDataset
     issues: tuple[GrokScanIssue, ...] = field(default_factory=tuple)
     support: GrokCumulativeSupport = GROK_CUMULATIVE_SUPPORT
+    session_records: tuple[NormalizedUsageRecord, ...] = field(default_factory=tuple)
+    discovered_session_aggregate: NormalizedUsageRecord = field(
+        default_factory=lambda: aggregate_normalized_records(
+            (),
+            provider="grok",
+            source=GROK_DISCOVERED_SESSION_SOURCE,
+            limitations=DISCOVERED_GROK_SESSION_LIMITATIONS,
+        )
+    )
+    provider_aggregate: NormalizedUsageRecord = field(
+        default_factory=lambda: aggregate_normalized_records(
+            (),
+            provider="grok",
+            source=GROK_PROVIDER_AGGREGATE_SOURCE,
+            limitations=DISCOVERED_GROK_SESSION_LIMITATIONS,
+        )
+    )
+    web_unsupported: NormalizedUsageRecord = field(
+        default_factory=grok_web_unsupported_record
+    )
+    cache_hits: int = 0
 
     @property
     def has_exact_session_totals(self) -> bool:
@@ -402,11 +486,35 @@ class GrokUsageScan:
 
 
 @dataclass(frozen=True, slots=True)
+class _DiscoveredGrokSession:
+    session_id: str
+    directory: Path
+    usage_mtime_ns: int = 0
+    usage_size: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class _GrokSessionDiscovery:
-    session_ids: tuple[str, ...]
+    sessions: tuple[_DiscoveredGrokSession, ...] = ()
     scan_truncated: bool = False
     read_errors: int = 0
     invalid_session_ids: int = 0
+    ambiguous_session_ids: int = 0
+
+    @property
+    def session_ids(self) -> tuple[str, ...]:
+        return tuple(item.session_id for item in self.sessions)
+
+
+def _usage_file_fingerprint(directory: Path) -> tuple[int, int]:
+    usage = directory / "usage.json"
+    try:
+        if usage.is_file() and not usage.is_symlink():
+            stat = usage.stat()
+            return int(stat.st_mtime_ns), int(stat.st_size)
+    except OSError:
+        pass
+    return 0, 0
 
 
 def _discover_grok_sessions(
@@ -419,13 +527,14 @@ def _discover_grok_sessions(
 
     sessions_root = root / "sessions"
     if not sessions_root.is_dir():
-        return _GrokSessionDiscovery(())
+        return _GrokSessionDiscovery()
     try:
         resolved_root = sessions_root.resolve()
     except OSError:
-        return _GrokSessionDiscovery((), read_errors=1)
+        return _GrokSessionDiscovery(read_errors=1)
 
-    found: set[str] = set()
+    found: dict[str, Path] = {}
+    ambiguous: set[str] = set()
     errors = 0
     invalid = 0
     entries_seen = 0
@@ -467,17 +576,36 @@ def _discover_grok_sessions(
             if _SAFE_SESSION_ID.fullmatch(session_id) is None:
                 invalid += 1
                 continue
-            found.add(session_id)
-            if len(found) > max_sessions:
+            previous = found.get(session_id)
+            if previous is not None and previous != summary.parent:
+                ambiguous.add(session_id)
+                continue
+            found[session_id] = summary.parent
+            unique_count = sum(1 for key in found if key not in ambiguous)
+            if unique_count > max_sessions:
                 truncated = True
                 break
     except (OSError, RuntimeError):
         errors += 1
+    discovered: list[_DiscoveredGrokSession] = []
+    for session_id in sorted(found):
+        if session_id in ambiguous:
+            continue
+        directory = found[session_id]
+        mtime_ns, size = _usage_file_fingerprint(directory)
+        discovered.append(
+            _DiscoveredGrokSession(session_id, directory, mtime_ns, size)
+        )
+        if len(discovered) >= max_sessions:
+            if len(found) - len(ambiguous) > max_sessions:
+                truncated = True
+            break
     return _GrokSessionDiscovery(
-        tuple(sorted(found)[:max_sessions]),
+        tuple(discovered),
         scan_truncated=truncated,
         read_errors=errors,
         invalid_session_ids=invalid,
+        ambiguous_session_ids=len(ambiguous),
     )
 
 
@@ -624,6 +752,345 @@ def _run_injected_command(
     return _BoundedCommandResult(returncode=completed.returncode, stdout=stdout)
 
 
+def default_grok_usage_cache_dir() -> Path:
+    """Return the credential-free Grok usage cache directory."""
+
+    if os.name == "nt":
+        root = Path(os.environ.get("APPDATA") or Path.home() / "AppData" / "Roaming")
+    else:
+        root = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    return root / "QuotaDeck" / "usage-cache" / "grok"
+
+
+def grok_usage_cache_path(cache_dir: Path, home: Path, session_id: str) -> Path:
+    try:
+        resolved = str(home.expanduser().resolve())
+    except OSError:
+        resolved = str(home)
+    digest = hashlib.sha256(f"{resolved}\0{session_id}".encode("utf-8")).hexdigest()
+    return cache_dir / f"{digest}.json"
+
+
+def _home_digest(home: Path) -> str:
+    try:
+        resolved = str(home.expanduser().resolve())
+    except OSError:
+        resolved = str(home)
+    return hashlib.sha256(resolved.encode("utf-8")).hexdigest()
+
+
+def _cache_has_secrets(payload: object) -> bool:
+    if isinstance(payload, Mapping):
+        for key, item in payload.items():
+            name = str(key).strip().casefold().replace("-", "_")
+            if name in _CACHE_SECRET_KEYS:
+                return True
+            if _cache_has_secrets(item):
+                return True
+        return False
+    if isinstance(payload, list):
+        return any(_cache_has_secrets(item) for item in payload)
+    return False
+
+
+def _summary_to_official_dict(summary: GrokUsageSummary) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "inputTokens": summary.inclusive_input_tokens,
+        "outputTokens": summary.output_tokens,
+        "totalTokens": summary.total_tokens,
+        "cachedReadTokens": summary.cached_read_tokens,
+        "cacheCreationTokens": summary.cache_creation_tokens,
+        "reasoningTokens": summary.reasoning_tokens,
+        "modelCalls": summary.model_calls,
+        "turnCount": summary.turn_count,
+    }
+    if summary.cost_usd_ticks is not None:
+        payload["costUsdTicks"] = summary.cost_usd_ticks
+    if summary.cost_is_partial:
+        payload["costIsPartial"] = True
+    if summary.usage_is_incomplete:
+        payload["usageIsIncomplete"] = True
+    if summary.primary_model_id:
+        payload["primaryModelId"] = summary.primary_model_id
+    return payload
+
+
+def _session_cache_payload(
+    session: GrokSessionUsage,
+    *,
+    home_digest: str,
+    usage_mtime_ns: int,
+    usage_size: int,
+) -> dict[str, object]:
+    session_raw = _summary_to_official_dict(session.summary)
+    if session.per_model_complete and session.model_totals:
+        session_raw["modelUsage"] = {
+            item.model: {
+                "inputTokens": (
+                    item.tokens.input_tokens
+                    + item.tokens.cached_input_tokens
+                    + item.tokens.cache_write_tokens
+                ),
+                "outputTokens": item.tokens.output_tokens,
+                "totalTokens": item.tokens.total_tokens,
+                "cachedReadTokens": item.tokens.cached_input_tokens,
+                "cacheCreationTokens": item.tokens.cache_write_tokens,
+                "reasoningTokens": item.tokens.reasoning_output_tokens,
+            }
+            for item in session.model_totals
+        }
+    turns: list[dict[str, object]] = []
+    for turn in session.turns:
+        row = _summary_to_official_dict(turn.summary)
+        row["turnNumber"] = turn.turn_number
+        if turn.ended_at is not None:
+            row["endedAt"] = turn.ended_at.astimezone(timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            )
+        turns.append(row)
+    return {
+        "schema": GROK_USAGE_CACHE_SCHEMA,
+        "home_sha256": home_digest,
+        "session_id": session.session_id,
+        "usage_mtime_ns": usage_mtime_ns,
+        "usage_size": usage_size,
+        "envelope": {
+            "sessionId": session.session_id,
+            "updatedAt": session.updated_at.astimezone(timezone.utc).isoformat().replace(
+                "+00:00", "Z"
+            ),
+            "session": session_raw,
+            "turns": turns,
+        },
+    }
+
+
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    except OSError:
+        return
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
+
+
+def read_grok_usage_cache(
+    path: Path,
+    *,
+    home: Path,
+    session_id: str,
+    usage_mtime_ns: int,
+    usage_size: int,
+) -> GrokSessionUsage | None:
+    """Load cached usage metadata.  Corrupt or secret-bearing files are ignored."""
+
+    try:
+        if not path.is_file() or path.stat().st_size > DEFAULT_MAX_CACHE_BYTES:
+            return None
+        raw = path.read_bytes()
+    except OSError:
+        return None
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError, RecursionError):
+        return None
+    if not isinstance(payload, Mapping) or _cache_has_secrets(payload):
+        return None
+    if str(payload.get("schema") or "") != GROK_USAGE_CACHE_SCHEMA:
+        return None
+    if (
+        payload.get("home_sha256") != _home_digest(home)
+        or payload.get("session_id") != session_id
+        or payload.get("usage_mtime_ns") != usage_mtime_ns
+        or payload.get("usage_size") != usage_size
+    ):
+        return None
+    try:
+        return parse_grok_usage_payload(
+            payload.get("envelope"), expected_session_id=session_id
+        )
+    except (GrokUsageFormatError, ValueError, RecursionError):
+        return None
+
+
+def write_grok_usage_cache(
+    path: Path,
+    session: GrokSessionUsage,
+    *,
+    home: Path,
+    usage_mtime_ns: int,
+    usage_size: int,
+) -> None:
+    payload = _session_cache_payload(
+        session,
+        home_digest=_home_digest(home),
+        usage_mtime_ns=usage_mtime_ns,
+        usage_size=usage_size,
+    )
+    if _cache_has_secrets(payload):
+        return
+    _atomic_write_json(path, payload)
+
+
+def _api_equivalent_usd(session: GrokSessionUsage) -> Decimal | None:
+    if session.summary.usage_is_incomplete:
+        return None
+    if session.per_model_complete and session.model_totals:
+        total = Decimal("0")
+        for item in session.model_totals:
+            estimate = estimate_api_equivalent_cost(
+                item.provider, item.model, item.tokens
+            )
+            if estimate.usd is None:
+                return None
+            total += estimate.usd
+        return total
+    model = session.summary.primary_model_id
+    if not model:
+        return None
+    return estimate_api_equivalent_cost("grok", model, session.tokens).usd
+
+
+def grok_session_record(
+    session: GrokSessionUsage,
+    *,
+    usd_krw_rate: Decimal | None = None,
+    account: str | None = None,
+) -> NormalizedUsageRecord:
+    """Per-session record.  ``updatedAt`` is never copied into ``timestamp``."""
+
+    tokens = session.tokens
+    api_usd = _api_equivalent_usd(session)
+    krw = (
+        api_usd * usd_krw_rate
+        if api_usd is not None and usd_krw_rate is not None and usd_krw_rate > 0
+        else None
+    )
+    limitations = [
+        "Local `grok usage` totals are per session, not an account-wide ledger.",
+        "updatedAt is file metadata, not a usage-event timestamp.",
+    ]
+    if session.summary.usage_is_incomplete:
+        limitations.append("Official usageIsIncomplete is set; totals may grow.")
+    if session.summary.cost_is_partial:
+        limitations.append("Official costIsPartial is set; reported cost is unknown.")
+    if session.cost_usd is None:
+        limitations.append("Unreported or partial cost ticks are not treated as free.")
+    confidence = (
+        UsageConfidence.PARTIAL
+        if session.summary.usage_is_incomplete or not session.turns_complete
+        else UsageConfidence.EXACT
+    )
+    return NormalizedUsageRecord(
+        provider="grok",
+        account=account,
+        model=session.summary.primary_model_id,
+        timestamp=None,
+        session=session.session_id,
+        turn=None,
+        input_tokens=tokens.input_tokens,
+        output_tokens=tokens.output_tokens,
+        cache_read_tokens=tokens.cached_input_tokens,
+        cache_write_tokens=tokens.cache_write_tokens,
+        reasoning_tokens=tokens.reasoning_output_tokens,
+        total_tokens=tokens.total_tokens,
+        reported_cost_usd=session.cost_usd,
+        api_equivalent_cost_usd=api_usd,
+        api_equivalent_cost_krw=krw,
+        source=GROK_USAGE_SOURCE,
+        confidence=confidence,
+        limitations=tuple(limitations),
+    )
+
+
+def grok_turn_record(
+    session: GrokSessionUsage,
+    turn: GrokTurnUsage,
+    *,
+    usd_krw_rate: Decimal | None = None,
+    account: str | None = None,
+) -> NormalizedUsageRecord:
+    """Turn row using official ``endedAt``, never session ``updatedAt``."""
+
+    tokens = turn.summary.tokens
+    api_usd = None
+    if not turn.summary.usage_is_incomplete and turn.summary.primary_model_id:
+        api_usd = estimate_api_equivalent_cost(
+            "grok", turn.summary.primary_model_id, tokens
+        ).usd
+    krw = (
+        api_usd * usd_krw_rate
+        if api_usd is not None and usd_krw_rate is not None and usd_krw_rate > 0
+        else None
+    )
+    confidence = (
+        UsageConfidence.PARTIAL
+        if turn.summary.usage_is_incomplete
+        else UsageConfidence.EXACT
+    )
+    return NormalizedUsageRecord(
+        provider="grok",
+        account=account,
+        model=turn.summary.primary_model_id or session.summary.primary_model_id,
+        timestamp=turn.ended_at,
+        session=session.session_id,
+        turn=turn.turn_number,
+        input_tokens=tokens.input_tokens,
+        output_tokens=tokens.output_tokens,
+        cache_read_tokens=tokens.cached_input_tokens,
+        cache_write_tokens=tokens.cache_write_tokens,
+        reasoning_tokens=tokens.reasoning_output_tokens,
+        total_tokens=tokens.total_tokens,
+        reported_cost_usd=turn.summary.cost_usd,
+        api_equivalent_cost_usd=api_usd,
+        api_equivalent_cost_krw=krw,
+        source=GROK_USAGE_SOURCE,
+        confidence=confidence,
+        limitations=(
+            "Turn rows are session fragments, not an account ledger.",
+            "endedAt is the official turn timestamp; updatedAt is not used.",
+        ),
+    )
+
+
+def grok_session_to_records(
+    session: GrokSessionUsage,
+    *,
+    usd_krw_rate: Decimal | None = None,
+    account: str | None = None,
+    include_turns: bool = False,
+) -> tuple[NormalizedUsageRecord, ...]:
+    records = [grok_session_record(session, usd_krw_rate=usd_krw_rate, account=account)]
+    if include_turns:
+        records.extend(
+            grok_turn_record(
+                session, turn, usd_krw_rate=usd_krw_rate, account=account
+            )
+            for turn in session.turns
+        )
+    return tuple(records)
+
+
 def scan_grok_session_usage(
     root: Path | None = None,
     *,
@@ -634,12 +1101,16 @@ def scan_grok_session_usage(
     max_json_bytes: int = DEFAULT_MAX_JSON_BYTES,
     max_discovery_entries: int = DEFAULT_MAX_DISCOVERY_ENTRIES,
     now: datetime | None = None,
+    cache_dir: Path | None = None,
+    usd_krw_rate: Decimal | None = None,
+    account: str | None = None,
 ) -> GrokUsageScan:
     """Run the official local usage command once per discovered session.
 
     Arguments are passed without a shell.  Output/stderr are never included in
     returned issues, which prevents an unexpected CLI diagnostic from leaking a
-    credential into UI logs.
+    credential into UI logs.  Unchanged ``usage.json`` fingerprints are served
+    from a credential-free on-disk cache of normalized usage metadata.
     """
 
     if timeout_seconds <= 0:
@@ -651,6 +1122,9 @@ def scan_grok_session_usage(
     if max_discovery_entries < 1:
         raise ValueError("max_discovery_entries must be at least 1")
     home = root or grok_home()
+    resolved_cache = (
+        cache_dir if cache_dir is not None else default_grok_usage_cache_dir()
+    )
     discovery = _discover_grok_sessions(
         home,
         max_sessions=max_sessions,
@@ -664,7 +1138,8 @@ def scan_grok_session_usage(
         issues.append(GrokScanIssue("discovery_error"))
     if discovery.invalid_session_ids:
         issues.append(GrokScanIssue("invalid_session_id"))
-    session_ids = discovered
+    if discovery.ambiguous_session_ids:
+        issues.append(GrokScanIssue("ambiguous_session_id"))
 
     resolved_executable: str | None
     if executable is None:
@@ -673,12 +1148,30 @@ def scan_grok_session_usage(
     else:
         resolved_executable = str(executable)
     parsed_sessions: list[GrokSessionUsage] = []
+    cache_hits = 0
 
-    if session_ids and resolved_executable is None:
+    if discovered and resolved_executable is None:
         issues.append(GrokScanIssue("command_not_found"))
     elif resolved_executable is not None:
         child_env = _minimal_child_environment(home)
-        for session_id in session_ids:
+        for item in discovery.sessions:
+            session_id = item.session_id
+            cache_path = grok_usage_cache_path(resolved_cache, home, session_id)
+            cached = read_grok_usage_cache(
+                cache_path,
+                home=home,
+                session_id=session_id,
+                usage_mtime_ns=item.usage_mtime_ns,
+                usage_size=item.usage_size,
+            )
+            if cached is not None:
+                parsed_sessions.append(cached)
+                cache_hits += 1
+                if not cached.turns_complete:
+                    issues.append(GrokScanIssue("partial_turn_rows", session_id))
+                if not cached.per_model_complete:
+                    issues.append(GrokScanIssue("per_model_unavailable", session_id))
+                continue
             try:
                 argv = [resolved_executable, "usage", session_id]
                 completed = (
@@ -714,13 +1207,17 @@ def scan_grok_session_usage(
                 parsed = parse_grok_usage_payload(
                     payload, expected_session_id=session_id
                 )
-            # ValueError covers JSONDecodeError, the interpreter's integer
-            # digit-limit error, and GrokUsageFormatError.  RecursionError is
-            # separate for pathologically nested but byte-bounded JSON.
             except (ValueError, RecursionError):
                 issues.append(GrokScanIssue("invalid_output", session_id))
                 continue
             parsed_sessions.append(parsed)
+            write_grok_usage_cache(
+                cache_path,
+                parsed,
+                home=home,
+                usage_mtime_ns=item.usage_mtime_ns,
+                usage_size=item.usage_size,
+            )
             if not parsed.turns_complete:
                 issues.append(GrokScanIssue("partial_turn_rows", session_id))
             if not parsed.per_model_complete:
@@ -741,6 +1238,7 @@ def scan_grok_session_usage(
         files_discovered=(
             len(discovered)
             + discovery.invalid_session_ids
+            + discovery.ambiguous_session_ids
             + (1 if discovery.scan_truncated else 0)
         ),
         files_read=len(parsed_sessions),
@@ -763,16 +1261,39 @@ def scan_grok_session_usage(
                 "invalid_output",
                 "partial_turn_rows",
                 "invalid_session_id",
+                "ambiguous_session_id",
             }
             for issue in issues
         ),
         scan_truncated=discovery.scan_truncated,
         limitations=tuple(limitations),
     )
+    session_records = tuple(
+        grok_session_record(item, usd_krw_rate=usd_krw_rate, account=account)
+        for item in parsed_sessions
+    )
+    discovered_aggregate = aggregate_normalized_records(
+        session_records,
+        provider="grok",
+        source=GROK_DISCOVERED_SESSION_SOURCE,
+        limitations=DISCOVERED_GROK_SESSION_LIMITATIONS,
+        account=account,
+    )
+    provider_aggregate = aggregate_normalized_records(
+        session_records,
+        provider="grok",
+        source=GROK_PROVIDER_AGGREGATE_SOURCE,
+        limitations=DISCOVERED_GROK_SESSION_LIMITATIONS,
+        account=account,
+    )
     return GrokUsageScan(
         sessions=tuple(parsed_sessions),
         dataset=UsageDataset(observations=(), coverages=(coverage,)),
         issues=tuple(issues),
+        session_records=session_records,
+        discovered_session_aggregate=discovered_aggregate,
+        provider_aggregate=provider_aggregate,
+        cache_hits=cache_hits,
     )
 
 

@@ -9,7 +9,7 @@ therefore never disguises unknown usage as free usage.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 from enum import Enum
@@ -348,6 +348,17 @@ def _catalog_limitations(price: ModelPrice) -> tuple[str, ...]:
     )
 
 
+_API_EQUIVALENT_LIMITATION = (
+    "Hypothetical official API list-price equivalent; not reported spend or an invoice."
+)
+
+
+def _with_api_equivalent_limitation(limitations: tuple[str, ...]) -> tuple[str, ...]:
+    if _API_EQUIVALENT_LIMITATION in limitations:
+        return limitations
+    return (_API_EQUIVALENT_LIMITATION, *limitations)
+
+
 def _unavailable(
     *,
     provider: object,
@@ -457,16 +468,63 @@ def estimate_model_cost(
             reason_code=CostUnavailableReason.BILLING_UNKNOWN,
             reason="API billing was not explicitly established",
         )
+    return _price_catalog_tokens(
+        provider,
+        model,
+        tokens,
+        billing=billing,
+        catalog=selected_catalog,
+    )
 
-    price = selected_catalog.resolve(provider, model)
+
+def estimate_api_equivalent_cost(
+    provider: str,
+    model: str,
+    tokens: object,
+    *,
+    billing_kind: BillingKind | str | None = BillingKind.UNKNOWN,
+    catalog: PriceCatalog | None = None,
+) -> CostEstimate:
+    """Apply official catalog rates regardless of subscription or mixed billing.
+
+    This is a hypothetical list-price equivalent, never reported spend.  Token
+    coverage, model identity, and category rates still fail closed to ``None``.
+    """
+
+    selected_catalog = catalog or DEFAULT_PRICE_CATALOG
+    billing = normalize_billing_kind(billing_kind)
+    estimate = _price_catalog_tokens(
+        provider,
+        model,
+        tokens,
+        billing=billing,
+        catalog=selected_catalog,
+    )
+    if not estimate.available:
+        return estimate
+    return replace(
+        estimate,
+        limitations=_with_api_equivalent_limitation(estimate.limitations),
+    )
+
+
+def _price_catalog_tokens(
+    provider: str,
+    model: str,
+    tokens: object,
+    *,
+    billing: BillingKind,
+    catalog: PriceCatalog,
+) -> CostEstimate:
+    price = catalog.resolve(provider, model)
     if price is None:
         return _unavailable(
             provider=provider,
             model=model,
             billing_kind=billing,
-            catalog=selected_catalog,
+            catalog=catalog,
             reason_code=CostUnavailableReason.UNKNOWN_MODEL,
-            reason=f"no {selected_catalog.as_of.isoformat()} price for this model",
+            reason=f"no {catalog.as_of.isoformat()} price for this model",
         )
 
     counts, invalid_reason = _read_token_counts(tokens)
@@ -475,7 +533,7 @@ def estimate_model_cost(
             provider=provider,
             model=model,
             billing_kind=billing,
-            catalog=selected_catalog,
+            catalog=catalog,
             reason_code=CostUnavailableReason.INVALID_USAGE,
             reason=invalid_reason or "invalid token usage",
         )
@@ -484,13 +542,13 @@ def estimate_model_cost(
             provider=provider,
             model=model,
             billing_kind=billing,
-            catalog=selected_catalog,
+            catalog=catalog,
             reason_code=CostUnavailableReason.UNCLASSIFIED_INPUT,
             reason="input token categories changed and cannot be priced exactly",
         )
 
     rates = price.rates
-    unit = selected_catalog.unit_tokens
+    unit = catalog.unit_tokens
     input_usd = _charge(counts["input_tokens"], rates.input, unit)
     output_usd = _charge(counts["output_tokens"], rates.output, unit)
 
@@ -501,7 +559,7 @@ def estimate_model_cost(
                 provider=provider,
                 model=model,
                 billing_kind=billing,
-                catalog=selected_catalog,
+                catalog=catalog,
                 reason_code=CostUnavailableReason.CACHE_READ_RATE_MISSING,
                 reason="observed cache reads have no catalog rate",
             )
@@ -520,7 +578,7 @@ def estimate_model_cost(
                 provider=provider,
                 model=model,
                 billing_kind=billing,
-                catalog=selected_catalog,
+                catalog=catalog,
                 reason_code=CostUnavailableReason.CACHE_WRITE_RATE_MISSING,
                 reason="observed 5-minute cache writes have no catalog rate",
             )
@@ -532,7 +590,7 @@ def estimate_model_cost(
                 provider=provider,
                 model=model,
                 billing_kind=billing,
-                catalog=selected_catalog,
+                catalog=catalog,
                 reason_code=CostUnavailableReason.CACHE_WRITE_RATE_MISSING,
                 reason="observed 1-hour cache writes have no catalog rate",
             )
@@ -543,7 +601,7 @@ def estimate_model_cost(
                 provider=provider,
                 model=model,
                 billing_kind=billing,
-                catalog=selected_catalog,
+                catalog=catalog,
                 reason_code=CostUnavailableReason.CACHE_WRITE_TTL_UNKNOWN,
                 reason="cache-write TTL is required to choose an exact rate",
             )
@@ -560,8 +618,8 @@ def estimate_model_cost(
         provider=price.provider,
         model=price.model,
         billing_kind=billing,
-        catalog_version=selected_catalog.version,
-        catalog_as_of=selected_catalog.as_of,
+        catalog_version=catalog.version,
+        catalog_as_of=catalog.as_of,
         price_scope=price.price_scope,
         breakdown=breakdown,
         limitations=_catalog_limitations(price),
@@ -774,6 +832,7 @@ __all__ = [
     "PRICE_CATALOG_VERSION",
     "PriceCatalog",
     "TokenRates",
+    "estimate_api_equivalent_cost",
     "estimate_model_cost",
     "estimate_report_cost",
     "estimate_usage_cost",

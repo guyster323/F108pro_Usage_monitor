@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import subprocess
 from datetime import datetime, timezone
@@ -20,7 +21,10 @@ from quotadeck.usage.grok import (
     build_grok_otel_dataset,
     discover_grok_session_ids,
     grok_external_otel_environment_hint,
+    grok_session_to_records,
+    grok_usage_cache_path,
     parse_grok_usage_payload,
+    reported_cost_ticks,
     scan_grok_session_usage,
 )
 from quotadeck.usage.models import UsageDataset, UsageSourceKind
@@ -34,6 +38,9 @@ def _summary(
     created: int = 10,
     reasoning: int = 5,
     cost_ticks: int | None = 25_000_000_000,
+    primary_model_id: str | None = "grok-4.6",
+    cost_is_partial: bool = False,
+    usage_is_incomplete: bool = False,
 ) -> dict[str, object]:
     value: dict[str, object] = {
         "inputTokens": input_tokens,
@@ -45,8 +52,14 @@ def _summary(
         "modelCalls": 2,
         "turnCount": 1,
     }
+    if primary_model_id is not None:
+        value["primaryModelId"] = primary_model_id
     if cost_ticks is not None:
         value["costUsdTicks"] = cost_ticks
+    if cost_is_partial:
+        value["costIsPartial"] = True
+    if usage_is_incomplete:
+        value["usageIsIncomplete"] = True
     return value
 
 
@@ -57,7 +70,7 @@ def _payload(session_id: str = "session-1") -> dict[str, object]:
     turn.update(
         {
             "turnNumber": 1,
-            "promptId": "prompt-1",
+            "endedAt": "2026-09-11T12:34:50Z",
             "modelUsage": {"grok-4.6": _summary()},
         }
     )
@@ -80,6 +93,11 @@ def test_official_usage_payload_normalizes_inclusive_input_and_cost() -> None:
     assert parsed.tokens.reasoning_output_tokens == 5
     assert parsed.cost_usd == Decimal("2.5")
     assert parsed.cost_usd_ticks == 25_000_000_000
+    assert parsed.summary.primary_model_id == "grok-4.6"
+    assert parsed.turns[0].ended_at == datetime(
+        2026, 9, 11, 12, 34, 50, tzinfo=timezone.utc
+    )
+    assert not hasattr(parsed.turns[0], "prompt_id")
     assert parsed.per_model_complete
     assert parsed.model_totals[0].model == "grok-4.6"
 
@@ -109,12 +127,18 @@ def test_usage_payload_rejects_inconsistent_token_shapes(
         parse_grok_usage_payload(payload)
 
 
-def test_usage_payload_rejects_conflicting_cache_aliases() -> None:
+def test_unofficial_cache_aliases_are_ignored() -> None:
     payload = _payload()
     payload["session"]["cacheReadTokens"] = 19  # type: ignore[index]
+    payload["session"]["cachedInputTokens"] = 18  # type: ignore[index]
+    payload["session"]["cacheWriteTokens"] = 9  # type: ignore[index]
+    payload["turns"][0]["promptId"] = "not-an-official-field"  # type: ignore[index]
 
-    with pytest.raises(GrokUsageFormatError):
-        parse_grok_usage_payload(payload)
+    parsed = parse_grok_usage_payload(payload)
+
+    assert parsed.tokens.cached_input_tokens == 20
+    assert parsed.tokens.cache_write_tokens == 10
+    assert not hasattr(parsed.turns[0], "prompt_id")
 
 
 def test_usage_payload_rejects_integer_above_bounded_counter_range() -> None:
@@ -202,6 +226,7 @@ def test_session_discovery_rejects_option_like_ids_without_running_them(
         tmp_path,
         executable="grok-test",
         runner=runner,
+        cache_dir=tmp_path / "qd-cache",
     )
 
     assert calls == []
@@ -219,6 +244,7 @@ def test_session_discovery_budget_marks_inventory_partial(tmp_path: Path) -> Non
         tmp_path,
         executable="grok-test",
         max_discovery_entries=1,
+        cache_dir=tmp_path / "qd-cache",
     )
 
     assert result.sessions == ()
@@ -245,6 +271,7 @@ def test_scanner_uses_official_command_without_shell_and_never_daily_dates(
         executable="grok-test",
         runner=runner,
         now=datetime(2026, 9, 11, tzinfo=timezone.utc),
+        cache_dir=tmp_path / "qd-cache",
     )
 
     assert calls[0][0] == ["grok-test", "usage", "session-1"]
@@ -261,6 +288,10 @@ def test_scanner_uses_official_command_without_shell_and_never_daily_dates(
     assert coverage.observations_emitted == 0
     assert coverage.observation_start is None
     assert coverage.observation_end is None
+    assert result.session_records[0].timestamp is None
+    assert result.session_records[0].session == "session-1"
+    assert result.session_records[0].reported_cost_usd == Decimal("2.5")
+    assert result.web_unsupported.source == "grok_web"
 
 
 def test_scanner_never_retains_command_error_text(tmp_path: Path) -> None:
@@ -273,7 +304,10 @@ def test_scanner_never_retains_command_error_text(tmp_path: Path) -> None:
         return subprocess.CompletedProcess(argv, 1, stdout="", stderr=secret)
 
     result = scan_grok_session_usage(
-        tmp_path, executable="grok-test", runner=runner
+        tmp_path,
+        executable="grok-test",
+        runner=runner,
+        cache_dir=tmp_path / "qd-cache",
     )
 
     assert result.sessions == ()
@@ -299,6 +333,7 @@ def test_scanner_classifies_json_integer_digit_limit_as_invalid_output(
         tmp_path,
         executable="grok-test",
         runner=runner,
+        cache_dir=tmp_path / "qd-cache",
     )
 
     assert result.sessions == ()
@@ -313,7 +348,9 @@ def test_scanner_does_not_call_runner_when_executable_is_missing(
     summary.write_text("{}", encoding="utf-8")
     monkeypatch.setattr("quotadeck.usage.grok.find_executable", lambda _name: None)
 
-    result = scan_grok_session_usage(tmp_path)
+    result = scan_grok_session_usage(
+        tmp_path, cache_dir=tmp_path / "qd-cache"
+    )
 
     assert [issue.code for issue in result.issues] == ["command_not_found"]
     assert result.dataset.coverages[0].read_errors == 1
@@ -338,7 +375,9 @@ def test_production_command_reader_stops_at_byte_cap(tmp_path: Path) -> None:
 def test_support_contract_does_not_claim_account_or_daily_local_ledger(
     tmp_path: Path,
 ) -> None:
-    result = scan_grok_session_usage(tmp_path, executable="unused")
+    result = scan_grok_session_usage(
+        tmp_path, executable="unused", cache_dir=tmp_path / "qd-cache"
+    )
 
     assert result.support.session_totals is GrokCapability.EXACT
     assert result.support.account_total is GrokCapability.UNAVAILABLE
@@ -429,3 +468,144 @@ def test_external_otel_hint_reads_only_opt_in_and_exporter_names() -> None:
 
 def test_cost_tick_constant_matches_official_scale() -> None:
     assert Decimal(GROK_COST_TICKS_PER_USD) == Decimal("1e10")
+    assert reported_cost_ticks(25_000_000_000) == 25_000_000_000
+    assert Decimal(25_000_000_000) / Decimal(GROK_COST_TICKS_PER_USD) == Decimal("2.5")
+
+
+def test_zero_and_partial_cost_ticks_are_unknown() -> None:
+    assert reported_cost_ticks(0) is None
+    assert reported_cost_ticks(-1) is None
+
+    zero = _payload()
+    zero["session"]["costUsdTicks"] = 0  # type: ignore[index]
+    assert parse_grok_usage_payload(zero).cost_usd is None
+
+    partial = _payload()
+    zero_session = _summary(cost_is_partial=True)
+    partial["session"] = zero_session
+    parsed = parse_grok_usage_payload(partial)
+    assert parsed.summary.cost_is_partial
+    assert parsed.cost_usd is None
+    assert parsed.cost_usd_ticks is None
+
+    incomplete = _payload()
+    incomplete["session"] = _summary(usage_is_incomplete=True)
+    parsed_incomplete = parse_grok_usage_payload(incomplete)
+    assert parsed_incomplete.summary.usage_is_incomplete
+    assert parsed_incomplete.cost_usd is None
+
+
+def test_headless_json_is_rejected_by_grok_usage_parser() -> None:
+    headless = {
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "total_tokens": 16,
+            "cache_read_tokens": 1,
+            "cache_creation_tokens": 1,
+        },
+        "total_cost_usd": 0.01,
+        "total_cost_usd_ticks": 1_000_000_000,
+    }
+    with pytest.raises(GrokUsageFormatError):
+        parse_grok_usage_payload(headless)
+
+
+def _seed_session(root: Path, session_id: str = "session-1") -> Path:
+    directory = root / "sessions" / "cwd" / session_id
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "summary.json").write_text("{}", encoding="utf-8")
+    usage = directory / "usage.json"
+    usage.write_text("{}", encoding="utf-8")
+    return directory
+
+
+def test_unchanged_usage_json_is_served_from_disk_cache(tmp_path: Path) -> None:
+    _seed_session(tmp_path)
+    cache_dir = tmp_path / "qd-cache"
+    calls: list[list[str]] = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=json.dumps(_payload()), stderr=""
+        )
+
+    first = scan_grok_session_usage(
+        tmp_path,
+        executable="grok-test",
+        runner=runner,
+        cache_dir=cache_dir,
+    )
+    second = scan_grok_session_usage(
+        tmp_path,
+        executable="grok-test",
+        runner=runner,
+        cache_dir=cache_dir,
+    )
+
+    assert len(calls) == 1
+    assert first.cache_hits == 0
+    assert second.cache_hits == 1
+    assert second.sessions[0].tokens.total_tokens == 150
+    cache_file = grok_usage_cache_path(cache_dir, tmp_path, "session-1")
+    cached = json.loads(cache_file.read_text(encoding="utf-8"))
+    dumped = json.dumps(cached).casefold()
+    assert "prompt" not in dumped
+    assert "api_key" not in dumped
+    assert "authorization" not in dumped
+
+
+def test_changed_usage_json_misses_cache_and_corrupt_cache_falls_back(
+    tmp_path: Path,
+) -> None:
+    directory = _seed_session(tmp_path)
+    usage = directory / "usage.json"
+    cache_dir = tmp_path / "qd-cache"
+    calls: list[list[str]] = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=json.dumps(_payload()), stderr=""
+        )
+
+    scan_grok_session_usage(
+        tmp_path,
+        executable="grok-test",
+        runner=runner,
+        cache_dir=cache_dir,
+    )
+    os.utime(usage, ns=(usage.stat().st_mtime_ns + 2_000_000_000,) * 2)
+    changed = scan_grok_session_usage(
+        tmp_path,
+        executable="grok-test",
+        runner=runner,
+        cache_dir=cache_dir,
+    )
+    assert changed.cache_hits == 0
+    assert len(calls) == 2
+
+    cache_file = grok_usage_cache_path(cache_dir, tmp_path, "session-1")
+    cache_file.write_text("{not-json", encoding="utf-8")
+    recovered = scan_grok_session_usage(
+        tmp_path,
+        executable="grok-test",
+        runner=runner,
+        cache_dir=cache_dir,
+    )
+    assert recovered.cache_hits == 0
+    assert len(calls) == 3
+    assert recovered.sessions[0].cost_usd == Decimal("2.5")
+
+
+def test_turn_ended_at_is_the_only_usage_timestamp() -> None:
+    parsed = parse_grok_usage_payload(_payload())
+    records = grok_session_to_records(parsed, include_turns=True)
+    session_record, turn_record = records
+    assert session_record.timestamp is None
+    assert turn_record.timestamp == datetime(
+        2026, 9, 11, 12, 34, 50, tzinfo=timezone.utc
+    )
+    assert turn_record.timestamp != parsed.updated_at
+    assert turn_record.turn == 1

@@ -10,6 +10,7 @@ from quotadeck.usage.pricing import (
     CostUnavailableReason,
     DEFAULT_PRICE_CATALOG,
     PRICE_CATALOG_AS_OF,
+    estimate_api_equivalent_cost,
     estimate_model_cost,
     estimate_report_cost,
     estimate_usage_cost,
@@ -330,3 +331,56 @@ def test_public_report_cost_helper_refuses_partial_coverage() -> None:
 
     assert not estimate.available
     assert estimate.reason_code is CostUnavailableReason.PARTIAL_SCAN
+
+
+def test_api_equivalent_cost_prices_subscription_history_without_changing_gates() -> None:
+    usage = TokenUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+    reported = estimate_model_cost(
+        "codex",
+        "gpt-5.6-sol",
+        usage,
+        billing_kind="subscription",
+    )
+    equivalent = estimate_api_equivalent_cost(
+        "codex",
+        "gpt-5.6-sol",
+        usage,
+        billing_kind="subscription",
+    )
+    mixed = estimate_api_equivalent_cost(
+        "codex",
+        "gpt-5.6-sol",
+        usage,
+        billing_kind="mixed",
+    )
+    unknown = estimate_api_equivalent_cost("codex", "gpt-5.6-sol", usage)
+
+    assert reported.usd is None
+    assert reported.reason_code is CostUnavailableReason.SUBSCRIPTION
+    assert equivalent.usd == Decimal("24")
+    assert equivalent.billing_kind is BillingKind.SUBSCRIPTION
+    assert equivalent.display == "LIST $24.00"
+    assert not equivalent.invoice_complete
+    assert "Hypothetical official API list-price equivalent" in equivalent.limitations[0]
+    assert mixed.usd == Decimal("24")
+    assert unknown.usd == Decimal("24")
+    assert unknown.billing_kind is BillingKind.UNKNOWN
+
+
+def test_api_equivalent_cost_still_refuses_unknown_or_unclassified_usage() -> None:
+    missing_model = estimate_api_equivalent_cost(
+        "codex",
+        "gpt-future-unknown",
+        TokenUsage(input_tokens=1),
+        billing_kind="subscription",
+    )
+    unclassified = estimate_api_equivalent_cost(
+        "codex",
+        "gpt-5.6-luna",
+        TokenUsage(input_tokens=100, unclassified_input_tokens=1),
+        billing_kind="api",
+    )
+    assert missing_model.usd is None
+    assert missing_model.reason_code is CostUnavailableReason.UNKNOWN_MODEL
+    assert unclassified.usd is None
+    assert unclassified.reason_code is CostUnavailableReason.UNCLASSIFIED_INPUT
