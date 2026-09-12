@@ -31,7 +31,10 @@ path and does not change Codex event rollup. The actual fixes are safe
 Grok session-inventory aggregation (not an account ledger) and wiring
 the normalized engine into the F108 cumulative LCD path, so Cursor
 attributable exports can show hypothetical API `LIST` cost while Grok
-session totals stay off the daily THIS/AVG card.
+session totals stay off the daily THIS/AVG card. The default Win32
+transport now accepts 64-byte `GET_FEATURE` payloads the same way hidapi
+does, without shifting protocol ACK `byte[3]`, and still rejects shorter
+reads.
 
 > New here? Follow **Getting started**. Protocol, themes, and security live under [docs/](docs/).
 ## Architecture
