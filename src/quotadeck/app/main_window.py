@@ -421,8 +421,11 @@ class MainWindow(QMainWindow):
         self.list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
         left.addWidget(self.list)
         form = QFormLayout()
-        self.metric = QComboBox()
-        self.metric.currentIndexChanged.connect(self._metric_changed)
+        # QPaintDevice.metric() is a virtual Qt method. A widget named `metric`
+        # shadows it so layout/paint calls raise TypeError: QComboBox is not
+        # callable, which the event loop reports as an unhandled exception.
+        self.metric_combo = QComboBox()
+        self.metric_combo.currentIndexChanged.connect(self._metric_changed)
         self.period = QComboBox()
         self.period.currentIndexChanged.connect(self._cumulative_setting_changed)
         self.currency = QComboBox()
@@ -449,7 +452,7 @@ class MainWindow(QMainWindow):
         self.lbl_poll = QLabel()
         self.lbl_hold = QLabel()
         self.lbl_upload = QLabel()
-        form.addRow(self.lbl_metric, self.metric)
+        form.addRow(self.lbl_metric, self.metric_combo)
         form.addRow(self.lbl_period, self.period)
         form.addRow(self.lbl_currency, self.currency)
         form.addRow(self.lbl_exchange_rate, self.exchange_rate)
@@ -538,14 +541,14 @@ class MainWindow(QMainWindow):
     def _t(self, key: str, **kwargs: object) -> str:
         return tr(self._lang(), key, **kwargs)
     def apply_language(self) -> None:
-        current_metric = self.metric.currentData() or self.config.metric_mode.value
-        self.metric.blockSignals(True)
-        self.metric.clear()
-        self.metric.addItem(self._t("metric_quota"), "quota")
-        self.metric.addItem(self._t("metric_cumulative"), "cumulative")
-        metric_index = self.metric.findData(current_metric)
-        self.metric.setCurrentIndex(metric_index if metric_index >= 0 else 0)
-        self.metric.blockSignals(False)
+        current_metric = self.metric_combo.currentData() or self.config.metric_mode.value
+        self.metric_combo.blockSignals(True)
+        self.metric_combo.clear()
+        self.metric_combo.addItem(self._t("metric_quota"), "quota")
+        self.metric_combo.addItem(self._t("metric_cumulative"), "cumulative")
+        metric_index = self.metric_combo.findData(current_metric)
+        self.metric_combo.setCurrentIndex(metric_index if metric_index >= 0 else 0)
+        self.metric_combo.blockSignals(False)
 
         current_period = self.period.currentData() or self.config.cumulative_period.value
         self.period.blockSignals(True)
@@ -624,7 +627,7 @@ class MainWindow(QMainWindow):
 
     def update_metric_hint(self) -> None:
         cumulative = (
-            self.metric.currentData() or self.config.metric_mode.value
+            self.metric_combo.currentData() or self.config.metric_mode.value
         ) == "cumulative"
         currency = self.currency.currentData() or self.config.cost_currency.value
         uses_krw = currency == CostCurrency.KRW.value
@@ -696,7 +699,7 @@ class MainWindow(QMainWindow):
             base: AccountConfig = item.data(Qt.ItemDataRole.UserRole)
             accounts.append(base)
         mode = self.mode.currentData() or self.mode.currentText()
-        metric = self.metric.currentData() or self.metric.currentText()
+        metric = self.metric_combo.currentData() or self.metric_combo.currentText()
         period = self.period.currentData() or self.period.currentText()
         currency = self.currency.currentData() or self.currency.currentText()
         return AppConfig(

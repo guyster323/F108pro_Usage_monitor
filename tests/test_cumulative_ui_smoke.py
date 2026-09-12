@@ -21,7 +21,7 @@ def test_metric_selector_persists_independently_from_account_order() -> None:
     window = MainWindow(live=False)
     window.config.ui_language = "ko"
     window.apply_language()
-    cumulative = window.metric.findData(MetricMode.CUMULATIVE.value)
+    cumulative = window.metric_combo.findData(MetricMode.CUMULATIVE.value)
     fixed = window.mode.findData(DisplayMode.FIXED.value)
     daily = window.period.findData(UsagePeriod.DAILY.value)
     monthly = window.period.findData(UsagePeriod.MONTHLY.value)
@@ -33,7 +33,7 @@ def test_metric_selector_persists_independently_from_account_order() -> None:
     assert krw >= 0 and usd >= 0
     assert window.currency.itemText(krw) == "KRW (만원)"
 
-    window.metric.setCurrentIndex(cumulative)
+    window.metric_combo.setCurrentIndex(cumulative)
     window.mode.setCurrentIndex(fixed)
     window.period.setCurrentIndex(daily)
     window.currency.setCurrentIndex(usd)
@@ -57,8 +57,8 @@ def test_metric_selector_persists_independently_from_account_order() -> None:
     assert config.cost_currency is CostCurrency.KRW
     assert config.usd_to_krw_rate == 1555.0
 
-    quota = window.metric.findData(MetricMode.QUOTA.value)
-    window.metric.setCurrentIndex(quota)
+    quota = window.metric_combo.findData(MetricMode.QUOTA.value)
+    window.metric_combo.setCurrentIndex(quota)
     assert window.period.isHidden()
     assert window.currency.isHidden()
     assert window.exchange_rate.isHidden()
@@ -76,7 +76,7 @@ def test_period_and_currency_labels_survive_language_refresh() -> None:
 
     app = QApplication.instance() or QApplication([])
     window = MainWindow(live=False)
-    window.metric.setCurrentIndex(window.metric.findData(MetricMode.CUMULATIVE.value))
+    window.metric_combo.setCurrentIndex(window.metric_combo.findData(MetricMode.CUMULATIVE.value))
     window.period.setCurrentIndex(window.period.findData(UsagePeriod.DAILY.value))
     window.currency.setCurrentIndex(window.currency.findData(CostCurrency.KRW.value))
     window.exchange_rate.setValue(1490)

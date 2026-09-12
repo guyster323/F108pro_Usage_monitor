@@ -250,3 +250,116 @@ def test_apply_reuses_identical_runtime(monkeypatch) -> None:
     assert window.runtime is original
     window.close()
     assert app is not None
+
+
+def test_event_loop_startup_does_not_shadow_paint_device_metric(
+    monkeypatch, tmp_path
+) -> None:
+    """Qt calls QMainWindow.metric() during show/paint.
+
+    A QComboBox stored as ``self.metric`` shadows that virtual and the event
+    loop reports TypeError: QComboBox object is not callable.
+    """
+
+    import sys
+    from datetime import timedelta
+
+    from PySide6.QtCore import QEventLoop, QTimer
+    from PySide6.QtGui import QPaintDevice
+    from PySide6.QtWidgets import QApplication, QComboBox
+
+    import quotadeck.app.main_window as main_window
+    from quotadeck.config import AccountConfig, AppConfig, save_config
+    from quotadeck.core.flashbudget import FlashBudget
+    from quotadeck.core.scheduler import SchedulerState
+
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setattr(main_window, "enumerate_interfaces", lambda: [])
+    monkeypatch.setattr(main_window, "wired_mode_ok", lambda _items: False)
+    monkeypatch.setattr(main_window, "aula_software_running", lambda: [])
+    monkeypatch.setattr(main_window, "discover_accounts", lambda: [])
+    monkeypatch.setattr(main_window, "set_launch_at_startup", lambda _enabled: None)
+
+    class FakeRuntime:
+        def __init__(self, config: AppConfig) -> None:
+            self.config = config
+            self.state = SchedulerState()
+            self.budget = FlashBudget(
+                min_interval=timedelta(minutes=config.min_upload_minutes),
+                max_age=timedelta(minutes=config.max_age_minutes),
+                daily_limit=config.daily_flash_limit,
+            )
+            self.mock = True
+
+        def poll(self) -> list:
+            return []
+
+        def build_frames(self, snapshots) -> list:
+            return []
+
+        def tick(self, *, force: bool = False) -> str:
+            return "skipped: mock"
+
+    monkeypatch.setattr(main_window, "QuotaDeckRuntime", FakeRuntime)
+    save_config(
+        AppConfig(
+            accounts=[
+                AccountConfig(
+                    "codex",
+                    "demo",
+                    "TEAM",
+                    True,
+                    source_kind="cli",
+                    source_label="Codex CLI",
+                )
+            ],
+            launch_at_startup=False,
+        )
+    )
+
+    caught: list[BaseException] = []
+
+    def sys_hook(exc_type, exc, _tb) -> None:
+        caught.append(exc)
+
+    def unraisable_hook(args) -> None:
+        if args.exc_value is not None:
+            caught.append(args.exc_value)
+
+    monkeypatch.setattr(sys, "excepthook", sys_hook)
+    monkeypatch.setattr(sys, "unraisablehook", unraisable_hook)
+
+    app = QApplication.instance() or QApplication([])
+    window = main_window.MainWindow(live=False)
+    try:
+        assert isinstance(window.metric_combo, QComboBox)
+        assert callable(window.metric)
+        assert not isinstance(window.metric, QComboBox)
+
+        window.show()
+        window.set_busy(True)
+        window.status.setText(window._t("status_reading"))
+        loop = QEventLoop(window)
+        QTimer.singleShot(150, loop.quit)
+        loop.exec()
+
+        pdm_width = window.metric(QPaintDevice.PaintDeviceMetric.PdmWidth)
+        assert isinstance(pdm_width, int)
+        assert pdm_width > 0
+        assert window.logicalDpiX() > 0
+        assert window.widthMM() >= 0
+        assert window.isVisible()
+        assert window.windowTitle()
+        collected = window.collect_config()
+        assert collected.metric_mode.value in {"quota", "cumulative"}
+        assert [item.alias for item in collected.accounts] == ["TEAM"]
+        assert not any(
+            isinstance(exc, TypeError) and "QComboBox" in str(exc) for exc in caught
+        )
+        assert caught == []
+    finally:
+        window.set_busy(False)
+        window.close()
+        app.processEvents()
+        assert app is not None
