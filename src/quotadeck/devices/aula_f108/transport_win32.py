@@ -136,6 +136,28 @@ class Win32Error(RuntimeError):
     pass
 
 
+def _normalize_feature_payload(buffer, returned: int) -> bytes:
+    """Normalize ``IOCTL_HID_GET_FEATURE`` bytes to a 64-byte protocol payload.
+
+    Windows HID stacks disagree on whether the transfer count includes the
+    leading report ID:
+
+    * 65 bytes: ``[report_id][64-byte payload]`` — drop the report ID.
+    * 64 bytes: the payload already starts at ``buffer[0]``. Do not skip a
+      byte, or protocol ACK ``byte[3]`` shifts and is dropped.
+
+    Any other count is a genuine short read. This matches hidapi's 64/65
+    handling without padding undersized reports.
+    """
+    if returned == REPORT_LEN + 1:
+        return bytes(buffer)[1 : REPORT_LEN + 1]
+    if returned == REPORT_LEN:
+        return bytes(buffer)[:REPORT_LEN]
+    raise Win32Error(
+        f"GET_FEATURE short read ({returned}/{REPORT_LEN + 1} bytes)"
+    )
+
+
 def _last_error() -> int:
     """Return ctypes' private Win32 error copy; kept replaceable for tests."""
     getter = getattr(ctypes, "get_last_error", None)
@@ -481,11 +503,7 @@ class Win32Transport:
             error = _last_error()
             log.error("event=win32_io_failed stage=get_feature error=%d", error)
             raise Win32Error(f"GET_FEATURE failed: {error}")
-        if returned.value and returned.value < REPORT_LEN + 1:
-            raise Win32Error(
-                f"GET_FEATURE short read ({returned.value}/{REPORT_LEN + 1} bytes)"
-            )
-        return bytes(buf)[1:]
+        return _normalize_feature_payload(buf, int(returned.value))
 
     def _cancel_and_drain(
         self,

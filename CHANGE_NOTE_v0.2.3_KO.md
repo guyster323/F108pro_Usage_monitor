@@ -18,6 +18,11 @@
 - `CumulativeUsageService` → `QuotaDeckRuntime` → renderer → F108 LCD 누적 경로가 정규화 엔진을 소비합니다. Cursor attributable export의 가상 API 정가(`LIST`)가 키보드에 도달하고, Grok 세션 총계는 일별 THIS/AVG로 올라가지 않습니다.
 - 커스텀 엔드포인트 가격은 계속 `N/A`입니다. unknown을 0으로 만들지 않으며 자격 증명은 노출하지 않습니다.
 
+## 2026-09-12 Win32 GET_FEATURE 64바이트 ABI
+
+- 연결된 AULA F108 Pro(VID `0C45` PID `800A`)에서 기본 auto/Win32 업로드가 페이지 쓰기 전 `GET_FEATURE short read (64/65 bytes)`로 실패했습니다. 동일 8프레임은 hidapi로 업로드되었습니다.
+- Windows `IOCTL_HID_GET_FEATURE`는 리포트 ID를 포함한 65바이트, 또는 페이로드만 있는 64바이트를 돌려줄 수 있습니다. 64바이트는 앞 바이트를 건너뛰지 않고 hidapi처럼 정규화해 ACK `byte[3]`을 유지하고, 그보다 짧은 읽기는 거절합니다.
+
 ## Display 이미지
 
 ![누적 Usage 비용 환산 행의 코인 아이콘](docs/cumulative-coin-preview.png)
@@ -26,8 +31,8 @@
 
 ## 검증
 
-- pytest: **421 passed, 1 skipped** (2026-09-12 정규화 엔진·LCD 연동 후)
-- Win32 transport unittest: **12 passed**
+- pytest: **426 passed, 1 skipped** (2026-09-12 Win32 GET_FEATURE 64바이트 ABI 후)
+- Win32 transport unittest: **17 passed** (64/65바이트 정규화·짧은 읽기 거절 포함)
 - `compileall`, 문서/예산/스프라이트/릴리스 검사 통과
 
 하드웨어 LCD 전송과 실제 로그인된 외부 CLI 계정의 live Usage 값은 CI에서 검증하지 않습니다.

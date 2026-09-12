@@ -17,13 +17,25 @@ def _dll(*names: str):
     return SimpleNamespace(**{name: _Function() for name in names})
 
 
-def _transport(kernel):
+def _transport(kernel, *, feature=None, lcd=0x1234567887654321):
     transport = object.__new__(win32.Win32Transport)
     transport._io_lock = win32.threading.RLock()
     transport._kernel = kernel
-    transport._lcd = 0x1234567887654321
-    transport._feature = None
+    transport._lcd = lcd
+    transport._feature = feature
     return transport
+
+
+def _feature_buffer(payload: bytes):
+    buf = (ctypes.c_ubyte * (win32.REPORT_LEN + 1))()
+    for index, value in enumerate(payload):
+        buf[index] = value
+    return buf
+
+
+def _acked_feature_payload() -> bytes:
+    # Distinct markers: skipping a 64-byte payload would move ACK off index 3.
+    return bytes([0x04, 0x18, 0xAA, 0x01]) + bytes([0xBB] * (win32.REPORT_LEN - 4))
 
 
 def _set_dword(pointer, value: int) -> None:
@@ -253,6 +265,75 @@ class Win32OverlappedTests(unittest.TestCase):
 
         with self.assertRaisesRegex(win32.Win32Error, "short write"):
             transport.write_lcd_page(bytes(win32.LCD_PAGE_BYTES))
+
+
+class _GetFeatureKernel:
+    def __init__(self, returned: int, fill: bytes) -> None:
+        self.returned = returned
+        self.fill = fill
+        self.ioctl = 0
+
+    def DeviceIoControl(
+        self, _handle, ioctl, _inbuf, _inlen, outbuf, _outlen, count, _overlapped
+    ):
+        self.ioctl = ioctl
+        for index, value in enumerate(self.fill):
+            outbuf[index] = value
+        _set_dword(count, self.returned)
+        return 1
+
+
+class Win32GetFeatureTests(unittest.TestCase):
+    def test_sixty_five_byte_report_drops_report_id_and_keeps_ack(self) -> None:
+        payload = _acked_feature_payload()
+        raw = bytes([0x00]) + payload
+        normalized = win32._normalize_feature_payload(_feature_buffer(raw), 65)
+
+        self.assertEqual(len(normalized), win32.REPORT_LEN)
+        self.assertEqual(normalized[:4], b"\x04\x18\xaa\x01")
+        self.assertEqual(normalized[3], 0x01)
+
+    def test_sixty_four_byte_report_does_not_shift_ack_status_byte(self) -> None:
+        payload = _acked_feature_payload()
+        normalized = win32._normalize_feature_payload(_feature_buffer(payload), 64)
+
+        self.assertEqual(len(normalized), win32.REPORT_LEN)
+        self.assertEqual(normalized[:4], b"\x04\x18\xaa\x01")
+        self.assertEqual(normalized[3], 0x01)
+        self.assertNotEqual(normalized[2], 0x01)
+
+    def test_shorter_feature_reads_are_rejected(self) -> None:
+        payload = _acked_feature_payload()
+        buf = _feature_buffer(bytes([0x00]) + payload)
+        for returned in (0, 1, 3, 63):
+            with self.subTest(returned=returned):
+                with self.assertRaisesRegex(win32.Win32Error, r"short read"):
+                    win32._normalize_feature_payload(buf, returned)
+
+    def test_get_feature_ioctl_accepts_both_return_conventions(self) -> None:
+        payload = _acked_feature_payload()
+        cases = (
+            (win32.REPORT_LEN + 1, bytes([0x00]) + payload),
+            (win32.REPORT_LEN, payload),
+        )
+        for returned, fill in cases:
+            with self.subTest(returned=returned):
+                kernel = _GetFeatureKernel(returned, fill)
+                transport = _transport(kernel, feature=0x1111)
+
+                response = transport.get_feature()
+
+                self.assertEqual(kernel.ioctl, win32.IOCTL_HID_GET_FEATURE)
+                self.assertEqual(response, payload)
+                self.assertEqual(response[3], 0x01)
+
+    def test_get_feature_ioctl_rejects_short_read(self) -> None:
+        payload = _acked_feature_payload()
+        kernel = _GetFeatureKernel(63, payload)
+        transport = _transport(kernel, feature=0x1111)
+
+        with self.assertRaisesRegex(win32.Win32Error, r"short read \(63/65 bytes\)"):
+            transport.get_feature()
 
 
 class Win32LifetimeTests(unittest.TestCase):
