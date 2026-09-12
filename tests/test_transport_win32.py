@@ -5,7 +5,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from quotadeck.devices.aula_f108 import protocol
 from quotadeck.devices.aula_f108 import transport_win32 as win32
+from quotadeck.devices.aula_f108.constants import CMD_BEGIN
+from quotadeck.devices.aula_f108.transport import pad64
 
 
 class _Function:
@@ -33,9 +36,21 @@ def _feature_buffer(payload: bytes):
     return buf
 
 
+# Connected F108 Pro default Win32 GET_FEATURE: count 64, raw prefix
+# 00 04 18 00 01 00 00 00. Dropping report ID yields ACK at payload[3].
+_OBSERVED_WIN32_COUNT64_PREFIX = bytes.fromhex("00 04 18 00 01 00 00 00")
+_OBSERVED_PAYLOAD_PREFIX = bytes.fromhex("04 18 00 01")
+
+
 def _acked_feature_payload() -> bytes:
     # Distinct markers: skipping a 64-byte payload would move ACK off index 3.
     return bytes([0x04, 0x18, 0xAA, 0x01]) + bytes([0xBB] * (win32.REPORT_LEN - 4))
+
+
+def _observed_count64_fill() -> bytes:
+    return _OBSERVED_WIN32_COUNT64_PREFIX + bytes(
+        win32.REPORT_LEN - len(_OBSERVED_WIN32_COUNT64_PREFIX)
+    )
 
 
 def _set_dword(pointer, value: int) -> None:
@@ -277,6 +292,9 @@ class _GetFeatureKernel:
         self, _handle, ioctl, _inbuf, _inlen, outbuf, _outlen, count, _overlapped
     ):
         self.ioctl = ioctl
+        if outbuf is None:
+            _set_dword(count, 0)
+            return 1
         for index, value in enumerate(self.fill):
             outbuf[index] = value
         _set_dword(count, self.returned)
@@ -293,14 +311,28 @@ class Win32GetFeatureTests(unittest.TestCase):
         self.assertEqual(normalized[:4], b"\x04\x18\xaa\x01")
         self.assertEqual(normalized[3], 0x01)
 
-    def test_sixty_four_byte_report_does_not_shift_ack_status_byte(self) -> None:
-        payload = _acked_feature_payload()
-        normalized = win32._normalize_feature_payload(_feature_buffer(payload), 64)
+    def test_sixty_four_byte_report_drops_report_id_and_keeps_ack(self) -> None:
+        fill = _observed_count64_fill()
+        normalized = win32._normalize_feature_payload(_feature_buffer(fill), 64)
 
         self.assertEqual(len(normalized), win32.REPORT_LEN)
-        self.assertEqual(normalized[:4], b"\x04\x18\xaa\x01")
+        self.assertEqual(normalized[:4], _OBSERVED_PAYLOAD_PREFIX)
         self.assertEqual(normalized[3], 0x01)
-        self.assertNotEqual(normalized[2], 0x01)
+        self.assertEqual(normalized[0], 0x04)
+        self.assertNotEqual(normalized[:4], fill[:4])
+
+    def test_sixty_four_byte_count_pads_unavailable_trailing_byte(self) -> None:
+        payload_63 = _OBSERVED_PAYLOAD_PREFIX + bytes([0xBB] * (win32.REPORT_LEN - 5))
+        fill = bytes([0x00]) + payload_63
+        buf = _feature_buffer(fill + bytes([0xFF]))
+
+        normalized = win32._normalize_feature_payload(buf, 64)
+
+        self.assertEqual(len(fill), win32.REPORT_LEN)
+        self.assertEqual(len(normalized), win32.REPORT_LEN)
+        self.assertEqual(normalized[:4], _OBSERVED_PAYLOAD_PREFIX)
+        self.assertEqual(normalized[62], 0xBB)
+        self.assertEqual(normalized[63], 0x00)
 
     def test_shorter_feature_reads_are_rejected(self) -> None:
         payload = _acked_feature_payload()
@@ -312,11 +344,16 @@ class Win32GetFeatureTests(unittest.TestCase):
 
     def test_get_feature_ioctl_accepts_both_return_conventions(self) -> None:
         payload = _acked_feature_payload()
+        observed = _observed_count64_fill()
         cases = (
-            (win32.REPORT_LEN + 1, bytes([0x00]) + payload),
-            (win32.REPORT_LEN, payload),
+            (win32.REPORT_LEN + 1, bytes([0x00]) + payload, payload),
+            (
+                win32.REPORT_LEN,
+                observed,
+                observed[1:].ljust(win32.REPORT_LEN, b"\x00"),
+            ),
         )
-        for returned, fill in cases:
+        for returned, fill, expected in cases:
             with self.subTest(returned=returned):
                 kernel = _GetFeatureKernel(returned, fill)
                 transport = _transport(kernel, feature=0x1111)
@@ -324,7 +361,25 @@ class Win32GetFeatureTests(unittest.TestCase):
                 response = transport.get_feature()
 
                 self.assertEqual(kernel.ioctl, win32.IOCTL_HID_GET_FEATURE)
-                self.assertEqual(response, payload)
+                self.assertEqual(response, expected)
+                self.assertEqual(response[3], 0x01)
+
+    def test_observed_win32_send_feature_accepts_ack_at_byte_3(self) -> None:
+        payload = _OBSERVED_PAYLOAD_PREFIX + bytes(win32.REPORT_LEN - 4)
+        cases = (
+            (win32.REPORT_LEN + 1, bytes([0x00]) + payload),
+            (win32.REPORT_LEN, _observed_count64_fill()),
+        )
+        for returned, fill in cases:
+            with self.subTest(returned=returned):
+                kernel = _GetFeatureKernel(returned, fill)
+                transport = _transport(kernel, feature=0x1111)
+                with patch.object(protocol, "COMMAND_DELAY_S", 0):
+                    response = protocol.send_feature(
+                        transport, "begin", pad64(CMD_BEGIN)
+                    )
+
+                self.assertEqual(response[:4], _OBSERVED_PAYLOAD_PREFIX)
                 self.assertEqual(response[3], 0x01)
 
     def test_get_feature_ioctl_rejects_short_read(self) -> None:

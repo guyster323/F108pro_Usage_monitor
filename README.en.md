@@ -32,9 +32,10 @@ Grok session-inventory aggregation (not an account ledger) and wiring
 the normalized engine into the F108 cumulative LCD path, so Cursor
 attributable exports can show hypothetical API `LIST` cost while Grok
 session totals stay off the daily THIS/AVG card. The default Win32
-transport now accepts 64-byte `GET_FEATURE` payloads the same way hidapi
-does, without shifting protocol ACK `byte[3]`, and still rejects shorter
-reads.
+transport now treats `GET_FEATURE` counts of 64 and 65 as report-ID
+prefixed buffers, drops `buffer[0]` so the payload starts at
+`04 18 00 01`, pads only the missing trailing byte for count 64, and
+still rejects shorter reads.
 
 > New here? Follow **Getting started**. Protocol, themes, and security live under [docs/](docs/).
 ## Architecture
