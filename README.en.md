@@ -46,6 +46,22 @@ The sprite compiler no longer calls Pillow `FASTOCTREE`. Equal-occupancy
 color cubes are ordered by spatial index so Windows CI reproduces the
 committed 104 runtime PNGs. Those runtime files were not rewritten.
 
+### Integrated validation
+
+The sprite compiler uses a deterministic ordering algorithm adapted from
+Pillow's `QuantOctree.c`; the attribution and license are recorded in
+[LICENSE](LICENSE). Documentation preview exporters preserve existing PNG
+bytes when the pixels are unchanged. Independent checks passed for
+`python tools/gen_sprites.py --check` in the default environment and with
+`PYTHONHASHSEED=1`, `tools/verify_refresh.py`, and the documentation exports.
+The `pyproject.toml` test path includes both `src` and the repository root, so
+both `pytest` and `python -m pytest` collect the regression tests under `tools`.
+
+The integrated run on 2026-09-12 finished with **434 passed, 1 skipped, and
+8 subtests passed**, and the Windows GitHub Actions build succeeded. The one
+skip is an existing test that requires permission to create a Windows directory
+symlink. See the [CI run](https://github.com/guyster323/F108pro_Usage_monitor/actions/runs/34682870012).
+
 > New here? Follow **Getting started**. Protocol, themes, and security live under [docs/](docs/).
 ## Architecture
 

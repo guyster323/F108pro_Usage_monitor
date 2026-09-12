@@ -31,6 +31,12 @@ Windows 기본 auto/Win32 전송은 `GET_FEATURE`가 65바이트 또는 64바이
 
 스프라이트 컴파일러는 Pillow `FASTOCTREE`의 libc `qsort` 타이브레이크를 쓰지 않습니다. occupancy가 같은 색 큐브는 공간 인덱스로 순서를 고정해 Windows CI와 커밋된 104개 런타임 PNG가 같은 팔레트를 만듭니다. 런타임 아트 파일은 바꾸지 않았습니다.
 
+### 통합 검증 상태
+
+스프라이트 컴파일러는 Pillow `QuantOctree.c`를 바탕으로 한 고정 순서 알고리즘을 사용하며, 출처와 라이선스는 [LICENSE](LICENSE)에 기록했습니다. 문서 미리보기 내보내기는 픽셀이 같을 때 기존 PNG 바이트를 유지합니다. `python tools/gen_sprites.py --check`(기본 환경과 `PYTHONHASHSEED=1`), `tools/verify_refresh.py`, 문서 내보내기를 독립적으로 통과했습니다. `pyproject.toml`의 테스트 경로에 `src`와 저장소 루트를 함께 지정해 `pytest`와 `python -m pytest` 모두 `tools` 회귀 테스트를 수집합니다.
+
+2026-09-12 통합 검증은 **434 passed, 1 skipped, 8 subtests passed**였고, Windows GitHub Actions 빌드도 성공했습니다. 건너뛴 테스트는 Windows 디렉터리 심볼릭 링크 권한이 필요한 기존 테스트입니다. [CI 실행 기록](https://github.com/guyster323/F108pro_Usage_monitor/actions/runs/34682870012)
+
 <p align="center">
   <img src="docs/cumulative-coin-preview.png" alt="Display 비용 환산 행의 코인 픽셀 아이콘" width="480">
 </p>
