@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import math
 import sys
@@ -287,6 +288,119 @@ def cmd_prices(args: argparse.Namespace) -> int:
     return 0
 
 
+def _normalized_record_payload(record) -> dict[str, object]:
+    def money(value):
+        return None if value is None else str(value)
+
+    return {
+        "provider": record.provider,
+        "account": record.account,
+        "model": record.model,
+        "timestamp": record.timestamp.isoformat() if record.timestamp else None,
+        "session": record.session,
+        "turn": record.turn,
+        "input_tokens": record.input_tokens,
+        "output_tokens": record.output_tokens,
+        "cache_read_tokens": record.cache_read_tokens,
+        "cache_write_tokens": record.cache_write_tokens,
+        "reasoning_tokens": record.reasoning_tokens,
+        "total_tokens": record.total_tokens,
+        "reported_cost_usd": money(record.reported_cost_usd),
+        "api_equivalent_cost_usd": money(record.api_equivalent_cost_usd),
+        "api_equivalent_cost_krw": money(record.api_equivalent_cost_krw),
+        "source": record.source,
+        "confidence": record.confidence.value,
+        "limitations": list(record.limitations),
+    }
+
+
+def cmd_usage_engine(args: argparse.Namespace) -> int:
+    """Print the normalized usage contract without quota/rate-limit fields."""
+
+    from dataclasses import replace
+    from decimal import Decimal
+
+    from quotadeck.discovery.accounts import select_accounts
+    from quotadeck.usage.collectors import CollectorSettings
+    from quotadeck.usage.engine import collect_normalized_usage
+    from quotadeck.usage.fx import (
+        FxFetchError,
+        default_fx_cache_path,
+        resolve_usd_krw_rate,
+    )
+
+    config = load_config()
+    accounts = select_accounts(discover_accounts(), config)
+    settings = CollectorSettings.from_env()
+    if args.cursor_sync:
+        settings = replace(settings, enable_cursor_sync=True, enable_token_stats=True)
+
+    fetcher = None
+    if args.no_live_fx:
+        def fetcher(*_args, **_kwargs):
+            raise FxFetchError("live_disabled")
+
+    fx = resolve_usd_krw_rate(
+        fetcher=fetcher,
+        cache_path=default_fx_cache_path(),
+        manual_rate=Decimal(str(config.usd_to_krw_rate)),
+    )
+    report = collect_normalized_usage(accounts, collector=settings, fx=fx)
+    if args.json:
+        payload = {
+            "schema": "quotadeck.normalized-usage.v1",
+            "records": [_normalized_record_payload(row) for row in report.records],
+            "account_totals": [
+                _normalized_record_payload(row) for row in report.account_totals
+            ],
+            "provider_totals": [
+                _normalized_record_payload(row) for row in report.provider_totals
+            ],
+            "global_total": _normalized_record_payload(report.global_total),
+            "fx": {
+                "usd_to_krw": None if fx.usd_to_krw is None else str(fx.usd_to_krw),
+                "source": fx.source,
+                "source_url": fx.source_url,
+                "as_of": fx.as_of.isoformat() if fx.as_of else None,
+                "fetched_at": fx.fetched_at.isoformat() if fx.fetched_at else None,
+                "stale": fx.stale,
+                "fallback": fx.fallback.value if fx.fallback else None,
+                "reason": fx.reason,
+            },
+            "issues": [
+                {"provider": row.provider, "account": row.account, "code": row.code}
+                for row in report.issues
+            ],
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    print(
+        f"{'SCOPE':<14} {'PROVIDER':<9} {'ACCOUNT':<18} {'TOKENS':>12} "
+        f"{'REPORTED USD':>14} {'API EQUIV USD':>14} {'API EQUIV KRW':>14}"
+    )
+    rows = [
+        *(('ACCOUNT', row) for row in report.account_totals),
+        *(('PROVIDER', row) for row in report.provider_totals),
+        ('GLOBAL', report.global_total),
+    ]
+    for scope, row in rows:
+        def shown(value) -> str:
+            return "N/A" if value is None else str(value)
+        print(
+            f"{scope:<14} {row.provider:<9} {(row.account or '-'):<18} "
+            f"{shown(row.total_tokens):>12} {shown(row.reported_cost_usd):>14} "
+            f"{shown(row.api_equivalent_cost_usd):>14} "
+            f"{shown(row.api_equivalent_cost_krw):>14}"
+        )
+    if report.issues:
+        print("Issues: " + ", ".join(
+            f"{item.provider}/{item.account or '-'}:{item.code}"
+            for item in report.issues
+        ))
+    return 0
+
+
 def cmd_detect(args: argparse.Namespace) -> int:
     accounts = discover_accounts()
     if not accounts:
@@ -494,6 +608,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="show one exact model ID from the bundled catalog",
     )
     p_prices.set_defaults(func=cmd_prices)
+    p_engine = sub.add_parser(
+        "usage-engine",
+        help="show normalized token usage and separate reported/API-equivalent costs",
+    )
+    p_engine.add_argument("--json", action="store_true", help="emit JSON")
+    p_engine.add_argument(
+        "--cursor-sync",
+        action="store_true",
+        help="refresh Cursor token-stats cache before reading it",
+    )
+    p_engine.add_argument(
+        "--no-live-fx",
+        action="store_true",
+        help="skip the live FX request and use cache/manual fallback",
+    )
+    p_engine.set_defaults(func=cmd_usage_engine)
     p_det = sub.add_parser("detect")
     p_det.add_argument("--apply", action="store_true")
     p_det.set_defaults(func=cmd_detect)
