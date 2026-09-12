@@ -25,11 +25,13 @@ retained on this device**, and uploads a 240×135 RGB565 playlist to the AULA
 F108 Pro LCD. Credentials and conversation content stay with the official CLI
 or app.
 
-**v0.2.3:** The normalized usage engine reconciles cumulative Codex snapshots
-instead of summing them as incremental events, and it does not treat Grok
-session totals as an account ledger. The F108 cumulative LCD path now
-consumes that engine, so Cursor attributable exports can show hypothetical
-API `LIST` cost while Grok session totals stay off the daily THIS/AVG card.
+**v0.2.3:** Review verified that existing Codex local delta reconciliation
+already matches UsageService analytics totals; this patch preserves that
+path and does not change Codex event rollup. The actual fixes are safe
+Grok session-inventory aggregation (not an account ledger) and wiring
+the normalized engine into the F108 cumulative LCD path, so Cursor
+attributable exports can show hypothetical API `LIST` cost while Grok
+session totals stay off the daily THIS/AVG card.
 
 > New here? Follow **Getting started**. Protocol, themes, and security live under [docs/](docs/).
 ## Architecture

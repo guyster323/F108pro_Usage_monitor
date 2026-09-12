@@ -132,9 +132,15 @@ def _grok_payload(session_id: str) -> dict[str, object]:
     }
 
 
-def test_collect_normalized_usage_reconciles_codex_cumulative_snapshots(
+def test_collect_normalized_usage_preserves_codex_delta_reconciliation(
     tmp_path: Path,
 ) -> None:
+    """Keep the pre-existing Codex delta contract; this is not a newly fixed overcount.
+
+    Independent review of pre-patch main showed ``collect_normalized_usage``
+    account totals already equalled UsageService analytics totals. Codex event
+    rollup is unchanged; the engine still consumes scanner increments.
+    """
     rows = [
         {"type": "session_meta", "payload": {"id": "session-1"}},
         _codex_cumulative_row("2026-09-10T12:00:00Z", raw_input=100, output=20),
