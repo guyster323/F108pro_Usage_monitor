@@ -239,22 +239,24 @@ def estimate_period_cost(
     *,
     billing_kind: Any = "unknown",
     partial: bool = False,
+    api_equivalent: bool = False,
 ) -> PeriodCostComparison:
     """Price THIS and AVG atomically using the actual model mix of each side."""
 
-    try:
-        from quotadeck.usage.pricing import BillingKind, normalize_billing_kind
+    if not api_equivalent:
+        try:
+            from quotadeck.usage.pricing import BillingKind, normalize_billing_kind
 
-        explicit_api = normalize_billing_kind(billing_kind) is BillingKind.API
-    except (ImportError, TypeError, ValueError):
-        explicit_api = (
-            str(getattr(billing_kind, "value", billing_kind)).casefold() == "api"
-        )
-    if not explicit_api:
-        return PeriodCostComparison.unavailable(
-            comparison.period,
-            "Only explicitly API-billed history can be priced.",
-        )
+            explicit_api = normalize_billing_kind(billing_kind) is BillingKind.API
+        except (ImportError, TypeError, ValueError):
+            explicit_api = (
+                str(getattr(billing_kind, "value", billing_kind)).casefold() == "api"
+            )
+        if not explicit_api:
+            return PeriodCostComparison.unavailable(
+                comparison.period,
+                "Only explicitly API-billed history can be priced.",
+            )
     if partial:
         return PeriodCostComparison.unavailable(
             comparison.period,
@@ -589,6 +591,47 @@ class CumulativeUsageService:
 
     def __init__(self, cache_seconds: float = 30.0) -> None:
         self.loader = UsageService(UsageDatasetCache(cache_seconds))
+        self.fx = None
+
+    @staticmethod
+    def _custom_pricing_scope(account: AccountRef) -> bool:
+        return account.extra.get("pricing_scope", "").casefold() == "custom"
+
+    def _engine_report(self, account: AccountRef):
+        from quotadeck.usage.engine import collect_normalized_usage
+
+        return collect_normalized_usage(
+            (account,),
+            collector=self.loader.collector,
+            fx=self.fx,
+            loader=self.loader,
+        )
+
+    def _grok_snapshot(
+        self,
+        account: AccountRef,
+        period: UsagePeriod,
+        engine: object,
+    ) -> CumulativeSnapshot:
+        scan = None
+        scans = getattr(engine, "grok_scans", ())
+        if scans:
+            scan = scans[0]
+        source_label = "GROK USAGE (SESSION ONLY)"
+        if scan is not None and scan.dataset.coverages:
+            source_label = scan.dataset.coverages[0].source_label
+        return CumulativeSnapshot.unsupported(
+            provider=account.provider,
+            account_id=account.account_id,
+            display_name=account.display_name,
+            plan=account.plan,
+            error=(
+                "Daily account totals require retained external OTel v1 records. "
+                "Local grok usage session totals are not an account ledger and are not summed."
+            ),
+            source_label=source_label,
+            period=period,
+        )
 
     @staticmethod
     def _explicit_billing_kind(account: AccountRef) -> str:
@@ -622,35 +665,28 @@ class CumulativeUsageService:
             )
         except (TypeError, ValueError):
             selected_period = UsagePeriod.DAILY
-        if account.provider == "grok" or account.provider not in {
-            "codex",
-            "claude",
-            "cursor",
-        }:
-            grok = account.provider == "grok"
+        engine = self._engine_report(account)
+        if account.provider == "grok":
+            return self._grok_snapshot(account, selected_period, engine)
+        if account.provider not in {"codex", "claude", "cursor"}:
             return CumulativeSnapshot.unsupported(
                 provider=account.provider,
                 account_id=account.account_id,
                 display_name=account.display_name,
                 plan=account.plan,
-                error=(
-                    "Daily account totals require retained external OTel v1 records."
-                    if grok
-                    else "Exact account-wide cumulative usage requires an admin ledger."
-                ),
-                source_label="OTEL REQUIRED" if grok else "ADMIN API REQUIRED",
+                error="Exact account-wide cumulative usage requires an admin ledger.",
+                source_label="ADMIN API REQUIRED",
                 period=selected_period,
             )
 
         billing_kind = self._explicit_billing_kind(account)
-        estimator = self._default_cost_estimator() if billing_kind == "api" else None
-        result = self.loader.load(
-            account.provider,
-            account.source_path,
-            cost_estimator=estimator,
-            billing_kind=billing_kind,
-            account_id=account.account_id,
-        )
+        result = next(iter(engine.load_results), None)
+        if result is None:
+            result = self.loader.load(
+                account.provider,
+                account.source_path,
+                account_id=account.account_id,
+            )
         if not result.available or result.report is None:
             cursor_blocked = account.provider == "cursor"
             return CumulativeSnapshot(
@@ -681,6 +717,25 @@ class CumulativeUsageService:
 
         partial = result.status is UsageLoadStatus.PARTIAL
         period_cost = result.period_cost(selected_period)
+        if (
+            (period_cost is None or not period_cost.available)
+            and not self._custom_pricing_scope(account)
+            and result.report is not None
+        ):
+            comparison = result.report.comparison(selected_period)
+            if comparison is not None:
+                try:
+                    from quotadeck.usage.pricing import estimate_api_equivalent_cost
+                except ImportError:
+                    estimate_api_equivalent_cost = None
+                if estimate_api_equivalent_cost is not None:
+                    period_cost = estimate_period_cost(
+                        comparison,
+                        estimate_api_equivalent_cost,
+                        billing_kind=billing_kind,
+                        partial=partial,
+                        api_equivalent=True,
+                    )
         source_kind = ""
         if result.dataset is not None and result.dataset.coverages:
             source_kind = result.dataset.coverages[0].source_kind.value
