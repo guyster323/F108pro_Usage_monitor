@@ -49,6 +49,7 @@
 
 - 통합본 pytest: **434 passed, 1 skipped, 8 subtests passed** (2026-09-12 GUI·스프라이트 수정 병합 후, 55.07초, 고유 `--basetemp`, cache 비활성)
 - 독립 프로세스 `python tools/gen_sprites.py --check` 2회(기본 hash seed, `PYTHONHASHSEED=1`)와 `tools/verify_refresh.py` 통과
+- pytest의 검색 경로에 저장소 루트를 명시해 `pytest`와 `python -m pytest` 모두 `tools` 회귀 테스트를 수집하도록 했습니다.
 - `export_crew.py` + `export_preview.py` 후 런타임 미리보기 PNG/GIF 바이트 유지 (`git diff -- docs/assets docs/hud-preview.png docs/hero-preview.gif` 깨끗)
 - Win32 transport unittest: **19 passed** (관측 count 64 접두사 `00 04 18 00 01`, ACK `byte[3]`, 짧은 읽기 거절 포함)
 - `compileall`, 문서/예산/스프라이트/릴리스 검사 통과
