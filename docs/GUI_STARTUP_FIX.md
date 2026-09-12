@@ -19,8 +19,8 @@ TypeError: 'PySide6.QtWidgets.QComboBox' object is not callable
 프로덕션 로그 `quotadeck-ui-20260912T062648.100504Z-pid34616.log`는
 `qt_startup` → `event_loop_started` 이후 `origin=main`의
 `python_unhandled_exception`으로 이 TypeError만 남겼습니다. 프로세스는
-살아 있고 스케줄러는 하드웨어 업로드를 계속했지만, `metric()` 실패로
-네이티브 메인 창이 비어 트레이만 남는 상태가 됩니다.
+살아 있고 스케줄러는 하드웨어 업로드를 계속했습니다. 숨김 실행 옵션도
+사용했으므로, 당시 창이 보이지 않았던 현상을 이 예외만의 결과로 단정하지 않습니다.
 
 ## 재현
 
@@ -60,5 +60,19 @@ TypeError: 'PySide6.QtWidgets.QComboBox' object is not callable
 `tests/test_grok_account_discovery.py` 1건입니다. Pillow `getdata` 폐기
 예정 경고는 기존과 같고 실패는 없습니다.
 
-실행 중인 QuotaDeck.exe와 사용자 `config.json`은 읽거나 닫지 않았습니다.
+위 회귀 테스트는 실행 중인 QuotaDeck.exe와 사용자 `config.json`을 사용하지 않았습니다.
+
+## 재빌드 실행 파일 확인
+
+2026-09-12 15:46 KST에 수정 코드를 포함한 실행 파일을 기동했습니다.
+새 로그에는 Qt 기동과 이벤트 루프 시작 후 해당 TypeError가 없었고,
+실제 계정 조회와 업로드 쿨다운 판단이 정상적으로 끝났습니다.
+Windows 접근성 정보로 설정 창, USB-C 키보드 연결, 선택한 3개 계정의
+미리보기 준비 상태를 확인했습니다. 잠금 화면에 가려진 스크린샷은
+앱 화면의 픽셀 검증 근거로 사용하지 않았습니다.
+
+배포 파일은 `dist/QuotaDeck.exe`이며, 런타임 소스는 `65c529d`와 같습니다.
+PyInstaller 빌드와 실행 파일의 `--version` 확인을 마쳤습니다.
+실행 파일 SHA-256:
+`14ed24bf94a94d27f001bfeee35d0dd4533d270eb262738dc2f8f05be1268398`.
 
