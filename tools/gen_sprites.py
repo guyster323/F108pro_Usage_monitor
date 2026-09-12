@@ -196,7 +196,247 @@ def _primary_alpha_box(alpha: Image.Image) -> tuple[int, int, int, int] | None:
     return largest_box
 
 
-def _compile_cell(cell: Image.Image, common_box: tuple[int, int, int, int]) -> Image.Image:
+MAX_RUNTIME_COLORS = 48
+# RGBA cube sizes from Pillow src/libImaging/QuantOctree.c.
+_CUBE_LEVELS_ALPHA = (3, 4, 3, 3, 2, 2, 2, 2)
+
+# Adapted from Pillow QuantOctree.c (FASTOCTREE). The occupancy-then-index
+# sort below replaces libc qsort so equal-count cubes stay portable.
+#
+# Copyright (c) 2010 Oliver Tonnhofer <olt@bogosoft.com>, Omniscale
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+
+class _OctreeBucket:
+    __slots__ = ("count", "r", "g", "b", "a")
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.r = 0
+        self.g = 0
+        self.b = 0
+        self.a = 0
+
+
+class _OctreeCube:
+    def __init__(self, r_bits: int, g_bits: int, b_bits: int, a_bits: int) -> None:
+        self.r_bits = max(r_bits, 0)
+        self.g_bits = max(g_bits, 0)
+        self.b_bits = max(b_bits, 0)
+        self.a_bits = max(a_bits, 0)
+        self.r_width = 1 << self.r_bits
+        self.g_width = 1 << self.g_bits
+        self.b_width = 1 << self.b_bits
+        self.a_width = 1 << self.a_bits
+        self.r_offset = self.g_bits + self.b_bits + self.a_bits
+        self.g_offset = self.b_bits + self.a_bits
+        self.b_offset = self.a_bits
+        self.size = self.r_width * self.g_width * self.b_width * self.a_width
+        self.buckets = [_OctreeBucket() for _ in range(self.size)]
+
+    def offset_pos(self, r: int, g: int, b: int, a: int) -> int:
+        return (
+            (r << self.r_offset)
+            | (g << self.g_offset)
+            | (b << self.b_offset)
+            | (a << 0)
+        )
+
+    def offset_pixel(self, r: int, g: int, b: int, a: int) -> int:
+        return self.offset_pos(
+            r >> (8 - self.r_bits) if self.r_bits else 0,
+            g >> (8 - self.g_bits) if self.g_bits else 0,
+            b >> (8 - self.b_bits) if self.b_bits else 0,
+            a >> (8 - self.a_bits) if self.a_bits else 0,
+        )
+
+
+def _clip8(value: int) -> int:
+    return 0 if value <= 0 else 255 if value >= 255 else value
+
+
+def _octree_avg(bucket: _OctreeBucket) -> tuple[int, int, int, int]:
+    if bucket.count == 0:
+        return (0, 0, 0, 0)
+    count = float(bucket.count)
+    return (
+        _clip8(int(bucket.r / count)),
+        _clip8(int(bucket.g / count)),
+        _clip8(int(bucket.b / count)),
+        _clip8(int(bucket.a / count)),
+    )
+
+
+def _octree_sort_buckets(buckets: list[_OctreeBucket]) -> list[_OctreeBucket]:
+    """Sort by occupancy, then original cube index.
+
+    Pillow's FASTOCTREE calls libc qsort with a count-only comparator. Equal
+    occupancy buckets therefore have an implementation-defined order: glibc's
+    mergesort keeps spatial index order, MSVC qsort does not. The 21 Windows
+    CI mismatches were exactly those frames. A total order on (-count, index)
+    matches the committed Linux-stable palettes on every host.
+    """
+
+    return [
+        bucket
+        for _, bucket in sorted(
+            enumerate(buckets),
+            key=lambda item: (-item[1].count, item[0]),
+        )
+    ]
+
+
+def _octree_add_bucket(src: _OctreeBucket, dst: _OctreeBucket) -> None:
+    dst.count += src.count
+    dst.r += src.r
+    dst.g += src.g
+    dst.b += src.b
+    dst.a += src.a
+
+
+def _octree_copy_cube(
+    cube: _OctreeCube,
+    r_bits: int,
+    g_bits: int,
+    b_bits: int,
+    a_bits: int,
+) -> _OctreeCube:
+    result = _OctreeCube(r_bits, g_bits, b_bits, a_bits)
+    src_reduce = [0, 0, 0, 0]
+    dst_reduce = [0, 0, 0, 0]
+    width = [0, 0, 0, 0]
+    pairs = (
+        (cube.r_bits, cube.r_width, result.r_bits, result.r_width),
+        (cube.g_bits, cube.g_width, result.g_bits, result.g_width),
+        (cube.b_bits, cube.b_width, result.b_bits, result.b_width),
+        (cube.a_bits, cube.a_width, result.a_bits, result.a_width),
+    )
+    for index, (src_bits, src_width, result_bits, result_width) in enumerate(pairs):
+        if src_bits > result_bits:
+            dst_reduce[index] = src_bits - result_bits
+            width[index] = src_width
+        else:
+            src_reduce[index] = result_bits - src_bits
+            width[index] = result_width
+    for r in range(width[0]):
+        for g in range(width[1]):
+            for b in range(width[2]):
+                for a in range(width[3]):
+                    src_pos = cube.offset_pos(
+                        r >> src_reduce[0],
+                        g >> src_reduce[1],
+                        b >> src_reduce[2],
+                        a >> src_reduce[3],
+                    )
+                    dst_pos = result.offset_pos(
+                        r >> dst_reduce[0],
+                        g >> dst_reduce[1],
+                        b >> dst_reduce[2],
+                        a >> dst_reduce[3],
+                    )
+                    _octree_add_bucket(cube.buckets[src_pos], result.buckets[dst_pos])
+    return result
+
+
+def _octree_subtract(cube: _OctreeCube, buckets: list[_OctreeBucket], n: int) -> None:
+    for bucket in buckets[:n]:
+        if bucket.count == 0:
+            continue
+        red, green, blue, alpha = _octree_avg(bucket)
+        minuend = cube.buckets[cube.offset_pixel(red, green, blue, alpha)]
+        minuend.count -= bucket.count
+        minuend.r -= bucket.r
+        minuend.g -= bucket.g
+        minuend.b -= bucket.b
+        minuend.a -= bucket.a
+
+
+def _octree_used(cube: _OctreeCube) -> int:
+    return sum(1 for bucket in cube.buckets if bucket.count > 0)
+
+
+def _octree_add_lookup(
+    cube: _OctreeCube,
+    palette: list[_OctreeBucket],
+    n_colors: int,
+    offset: int,
+) -> None:
+    for index in range(offset + n_colors - 1, offset - 1, -1):
+        red, green, blue, alpha = _octree_avg(palette[index])
+        cube.buckets[cube.offset_pixel(red, green, blue, alpha)].count = index
+
+
+def _quantize_rgba_octree(
+    image: Image.Image,
+    colors: int = MAX_RUNTIME_COLORS,
+) -> Image.Image:
+    """FASTOCTREE with a total occupancy+index order instead of libc qsort."""
+
+    rgba = image.convert("RGBA")
+    raw = rgba.tobytes()
+    bits = _CUBE_LEVELS_ALPHA
+    fine = _OctreeCube(bits[0], bits[1], bits[2], bits[3])
+    for index in range(0, len(raw), 4):
+        red, green, blue, alpha = raw[index : index + 4]
+        bucket = fine.buckets[fine.offset_pixel(red, green, blue, alpha)]
+        bucket.count += 1
+        bucket.r += red
+        bucket.g += green
+        bucket.b += blue
+        bucket.a += alpha
+
+    coarse = _octree_copy_cube(fine, bits[4], bits[5], bits[6], bits[7])
+    n_coarse = min(_octree_used(coarse), colors)
+    n_fine = colors - n_coarse
+    fine_palette = _octree_sort_buckets(fine.buckets)
+    _octree_subtract(coarse, fine_palette, n_fine)
+    while n_coarse > _octree_used(coarse):
+        already = n_fine
+        n_coarse = _octree_used(coarse)
+        n_fine = colors - n_coarse
+        _octree_subtract(coarse, fine_palette[already:], n_fine - already)
+
+    palette = _octree_sort_buckets(coarse.buckets)[:n_coarse] + fine_palette[:n_fine]
+    while len(palette) < colors:
+        palette.append(_OctreeBucket())
+
+    coarse_lookup = _OctreeCube(bits[4], bits[5], bits[6], bits[7])
+    _octree_add_lookup(coarse_lookup, palette, n_coarse, 0)
+    lookup = _octree_copy_cube(coarse_lookup, bits[0], bits[1], bits[2], bits[3])
+    _octree_add_lookup(lookup, palette, n_fine, n_coarse)
+    palette_rgba = [_octree_avg(bucket) for bucket in palette]
+
+    out = bytearray(len(raw))
+    for index in range(0, len(raw), 4):
+        red, green, blue, alpha = raw[index : index + 4]
+        mapped = palette_rgba[
+            lookup.buckets[lookup.offset_pixel(red, green, blue, alpha)].count
+        ]
+        out[index : index + 4] = bytes(mapped)
+    return Image.frombytes("RGBA", rgba.size, bytes(out))
+
+
+def _align_runtime_cell(
+    cell: Image.Image,
+    common_box: tuple[int, int, int, int],
+) -> Image.Image:
     cropped = cell.crop(common_box)
     scale = min(
         CONTENT_SIZE[0] / max(1, cropped.width),
@@ -231,14 +471,15 @@ def _compile_cell(cell: Image.Image, common_box: tuple[int, int, int, int]) -> I
             fill=0,
         )
         canvas.putalpha(alpha)
+    return canvas
 
+
+def _compile_cell(cell: Image.Image, common_box: tuple[int, int, int, int]) -> Image.Image:
+    canvas = _align_runtime_cell(cell, common_box)
     # One compact per-frame palette, then snap RGB to exactly representable
-    # RGB565 channel values. Dithering is intentionally disabled.
-    quantized = canvas.quantize(
-        colors=48,
-        method=Image.Quantize.FASTOCTREE,
-        dither=Image.Dither.NONE,
-    ).convert("RGBA")
+    # RGB565 channel values. Dithering is intentionally disabled. Do not call
+    # Image.quantize(FASTOCTREE): libc qsort tie-breaks are not portable.
+    quantized = _quantize_rgba_octree(canvas)
     quantized.putalpha(canvas.getchannel("A"))
     red, green, blue, alpha = quantized.split()
     red = red.point(lambda value: value & 0xF8)

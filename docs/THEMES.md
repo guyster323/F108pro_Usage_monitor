@@ -127,8 +127,17 @@ from `artwork/coin-pixel-source.png` by `tools/gen_coin.py`. It is packaged as
 character sprites.
 
 The development dependency pins Pillow `12.3.0`, and the compiler records the
-active version in `theme.json`, because resampling and palette quantization can
-change between Pillow releases.
+active version in `theme.json`, because resampling can still change between
+Pillow releases. Palette reduction does **not** call Pillow
+`Image.quantize(FASTOCTREE)`: that path sorts occupancy cubes with libc
+`qsort` and no secondary key, so equal-count buckets get a different palette
+on MSVC than on glibc. Windows CI therefore reported 21 runtime PNGs plus the
+contact sheet as out of date even though a second in-process compile on the
+same host was stable. `tools/gen_sprites.py` uses the same octree cubes with a
+`(-count, spatial-index)` order so the committed 104 frames stay bit-identical
+on Windows and Linux. That octree is adapted from Pillow `QuantOctree.c`
+(Copyright 2010 Oliver Tonnhofer, Omniscale; MIT); the notice is in
+`tools/gen_sprites.py` and `LICENSE`.
 
 Normal generation stages and validates a complete theme before replacing a
 previous compiler-managed theme. Resolved base source, usage source, theme, and

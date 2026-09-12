@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PIL import Image
+
 from quotadeck.cli import _snapshots_from_fixture
 from quotadeck.config import default_theme_dir
 from quotadeck.core.models import DisplayMode
@@ -14,6 +16,18 @@ from quotadeck.renderer.sprites import load_theme
 ROOT = Path(__file__).resolve().parents[1]
 OUT_GIF = ROOT / "docs" / "hero-preview.gif"
 OUT_PNG = ROOT / "docs" / "hud-preview.png"
+
+
+def _write_png(image: Image.Image, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.is_file():
+        with Image.open(dest) as existing:
+            existing.load()
+            previous = existing.convert(image.mode)
+        if previous.size == image.size and previous.tobytes() == image.tobytes():
+            return
+    image.save(dest)
+
 
 def main() -> None:
     OUT_GIF.parent.mkdir(parents=True, exist_ok=True)
@@ -29,7 +43,7 @@ def main() -> None:
     )
     write_gif(frames, OUT_GIF)
     hardware_preview = rgb565_to_image(image_to_rgb565(frames[0].image))
-    hardware_preview.save(OUT_PNG)
+    _write_png(hardware_preview, OUT_PNG)
     print(
         f"wrote {OUT_GIF} ({len(frames)} frames) and RGB565 preview "
         f"{OUT_PNG} size={hardware_preview.size}"

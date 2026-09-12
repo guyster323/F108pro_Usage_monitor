@@ -42,6 +42,10 @@ through the default Win32 backend, with all 127 page ACKs and the final
 apply ACK verified. This check used a synthetic Cursor export, not real
 billing data. See the [hardware verification record](docs/WIN32_LCD_VERIFICATION.md).
 
+The sprite compiler no longer calls Pillow `FASTOCTREE`. Equal-occupancy
+color cubes are ordered by spatial index so Windows CI reproduces the
+committed 104 runtime PNGs. Those runtime files were not rewritten.
+
 > New here? Follow **Getting started**. Protocol, themes, and security live under [docs/](docs/).
 ## Architecture
 

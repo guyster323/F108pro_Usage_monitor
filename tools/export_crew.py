@@ -21,6 +21,23 @@ def _font(size: int) -> ImageFont.ImageFont:
     # not, and made documentation previews drift across platforms.
     return ImageFont.load_default()
 
+
+def _write_png(image: Image.Image, dest: Path) -> None:
+    """Keep committed bytes when visible pixels already match.
+
+    Pillow PNG encoding can change without a pixel change, and CI treats any
+    ``docs`` byte diff as a failure.
+    """
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.is_file():
+        with Image.open(dest) as existing:
+            existing.load()
+            previous = existing.convert(image.mode)
+        if previous.size == image.size and previous.tobytes() == image.tobytes():
+            return
+    image.save(dest)
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     portraits: list[tuple[Image.Image, str, tuple[int, int, int]]] = []
@@ -32,7 +49,7 @@ def main() -> None:
         draw = ImageDraw.Draw(card)
         draw.text((12, big.height + 16), label, fill=color, font=_font(18))
         dest = OUT / f"crew-{name}.png"
-        card.convert("RGB").save(dest)
+        _write_png(card.convert("RGB"), dest)
         portraits.append((card, label, color))
     gap = 16
     width = sum(item[0].width for item in portraits) + gap * (len(portraits) + 1)
@@ -43,7 +60,7 @@ def main() -> None:
         lineup.paste(card.convert("RGB"), (x, 16))
         x += card.width + gap
     dest = OUT / "crew-lineup.png"
-    lineup.save(dest)
+    _write_png(lineup, dest)
     print(f"wrote {dest} and {len(portraits)} portraits")
 
 
