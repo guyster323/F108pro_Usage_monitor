@@ -2,7 +2,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from quotadeck.core.flashbudget import FlashBudget
+from quotadeck.core.flashbudget import ACTIVE_HOURS_PER_DAY, FlashBudget
+
+
+def test_active_hours_are_sixteen_not_a_24h_clock() -> None:
+    assert ACTIVE_HOURS_PER_DAY == 16
+    assert FlashBudget(min_interval=timedelta(minutes=10)).estimated_uncapped_daily_writes() == 96
+    assert FlashBudget(min_interval=timedelta(minutes=7)).estimated_uncapped_daily_writes() == 138
 
 
 def test_ten_minute_interval_matches_readme() -> None:

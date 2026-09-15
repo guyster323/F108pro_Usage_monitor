@@ -57,6 +57,7 @@ def test_config_defaults_are_sixty_five_ten() -> None:
     assert config.poll_seconds == 60
     assert config.scene_hold_seconds == 5
     assert config.min_upload_minutes == 10
+    assert config.fx_auto is True
     assert _hold_seconds({}) == 5
     assert _hold_seconds({"scene_hold_seconds": 4}) == 4
     assert _hold_seconds({"scene_hold_seconds": 10}) == 10

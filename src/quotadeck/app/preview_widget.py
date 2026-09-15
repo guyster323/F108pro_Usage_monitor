@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import QLabel
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QImage, QPixmap, QResizeEvent
+from PySide6.QtWidgets import QLabel, QSizePolicy
 
 from quotadeck.devices.aula_f108.constants import LCD_HEIGHT, LCD_WIDTH
 from quotadeck.devices.aula_f108.payload import Frame
@@ -13,12 +13,30 @@ class LcdPreview(QLabel):
         self._scale = scale
         self._frames: list[Frame] = []
         self._index = 0
+        self._current = None
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._advance)
-        self.setFixedSize(LCD_WIDTH * scale, LCD_HEIGHT * scale)
+        self.setMinimumSize(LCD_WIDTH, LCD_HEIGHT)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background:#101418; border:1px solid #2a3238;")
         self.setText("No preview")
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        # Prefer 2x at the 920x620 design size; grow toward 3x when space allows.
+        preferred = min(self._scale, 2)
+        return QSize(LCD_WIDTH * preferred, LCD_HEIGHT * preferred)
+
+    def hasHeightForWidth(self) -> bool:  # noqa: N802
+        return True
+
+    def heightForWidth(self, width: int) -> int:  # noqa: N802
+        return max(LCD_HEIGHT, int(width * LCD_HEIGHT / LCD_WIDTH))
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        if self._current is not None:
+            self._paint(self._current)
     def show_image(self, image) -> None:
         self._timer.stop()
         self._frames = []
@@ -43,6 +61,7 @@ class LcdPreview(QLabel):
         self._paint(frame.image)
         self._timer.start(max(200, frame.delay_ms))
     def _paint(self, image) -> None:
+        self._current = image
         rgb = image.convert("RGB")
         data = rgb.tobytes()
         qimg = QImage(data, rgb.size[0], rgb.size[1], rgb.size[0] * 3, QImage.Format.Format_RGB888)

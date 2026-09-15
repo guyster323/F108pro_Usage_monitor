@@ -315,6 +315,23 @@ def test_allocate_uses_requested_hold() -> None:
     assert sum(budget.frame_delays_ms) == 7000
 
 
+def test_serial_payload_and_preview_duration_is_account_count_times_hold() -> None:
+    from quotadeck.devices.aula_f108.payload import build_payload
+
+    snaps = _snapshots()[:3]
+    sevs = {s.key: snapshot_severity(s) for s in snaps}
+    frames = render_playlist(snaps, sevs, load_theme(THEME), frame_budget=32, hold_ms=5000)
+    budget = allocate(len(snaps), 32, hold_ms=5000)
+    assert budget.account_hold_ms == 5000
+    payload = build_payload(frames)
+    frame_count = payload[0]
+    payload_ms = sum(payload[1 + index] * 20 for index in range(frame_count))
+    rendered_ms = sum(delay_byte(frame.delay_ms) * 20 for frame in frames)
+    assert rendered_ms == 5000 * len(snaps)
+    assert payload_ms == rendered_ms
+    assert payload_ms == budget.account_hold_ms * len(snaps)
+
+
 def test_every_account_gets_exactly_five_seconds() -> None:
     snaps = _snapshots()
     sevs = {s.key: snapshot_severity(s) for s in snaps}
@@ -325,6 +342,22 @@ def test_every_account_gets_exactly_five_seconds() -> None:
         start = index * budget.frames_per_account
         account_frames = frames[start : start + budget.frames_per_account]
         assert sum(delay_byte(frame.delay_ms) * 20 for frame in account_frames) == 5000
+
+
+def test_fixed_order_preserves_user_list_and_smart_sorts_urgency() -> None:
+    from quotadeck.core.models import DisplayMode, Severity
+    from quotadeck.renderer.scenes import _order
+
+    snaps = _snapshots()
+    sevs = {snap.key: Severity.HEALTHY for snap in snaps}
+    sevs[snaps[-1].key] = Severity.CRITICAL
+    sevs[snaps[0].key] = Severity.CAUTION
+    fixed = _order(snaps, sevs, DisplayMode.FIXED)
+    assert [item.key for item in fixed] == [item.key for item in snaps]
+    smart = _order(snaps, sevs, DisplayMode.SMART)
+    assert smart[0].key == snaps[-1].key
+    assert [item.key for item in smart if item.key != snaps[-1].key][0] == snaps[0].key
+    assert sorted(item.key for item in smart) == sorted(item.key for item in snaps)
 
 
 def test_smart_order_has_no_duplicate_accounts() -> None:

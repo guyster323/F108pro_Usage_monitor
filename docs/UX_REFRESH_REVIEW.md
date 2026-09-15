@@ -183,7 +183,7 @@ partial scan, unknown model/category, 비교 이력 부족 중 하나라도 있�
 표시하지 않는다. KRW는 USD 결과에 GUI의 수동 `usd_to_krw_rate`를 적용한 표시값이며
 기본값은 1,400원/USD이고 실시간 환율이 아니다. 정가 snapshot 역시 실시간 web 가격,
 long-context/fast/batch/지역/도구 별도 요금 또는 청구서가 아니다. 이 주의 문구와
-가격표 날짜, 수동 환율은 GUI에서 확인한다. 세부 지원표와 가격 출처는
+가격표 날짜와 환율 출처(재무부 분기 고시 / 캐시 / 수동 폴백)는 GUI hover에서 확인한다. 세부 지원표와 가격 출처는
 [CUMULATIVE_USAGE.md](CUMULATIVE_USAGE.md)에 있다.
 
 ## 이미지 생성 원본에서 88×108 런타임 asset까지
@@ -241,8 +241,8 @@ themes/quotadeck-crew/provider/<provider>/<state>_01.png
 
 | 경로 | 책임 |
 |---|---|
-| `src/quotadeck/config.py` | 새 설정의 5초 기본값, 기존 명시값 보존, config v5와 독립 `metric_mode`·일별/월별·KRW/USD·수동 환율 기록, 2~20초 저장 범위 |
-| `src/quotadeck/app/i18n.py` | 표시 정보·기간·통화 선택, 수동 환율, 계정당 표시 시간, 누적 local-history/가격 안내와 Flash 상한 표시 |
+| `src/quotadeck/config.py` | 새 설정의 5초 기본값, 기존 명시값 보존, config v5와 독립 `metric_mode`·일별/월별·KRW/USD·자동 환율+수동 폴백 기록, 2~20초 저장 범위 |
+| `src/quotadeck/app/i18n.py` | 표시 정보·기간·통화 선택, 자동/수동 환율, 계정당 표시 시간, hover 안내와 Flash 16시간 추정 |
 | `src/quotadeck/cli.py`, `src/quotadeck/__main__.py`, `src/quotadeck/diagnostics.py` | GUI import 전부터 시작하는 회전 로그, 예외/fault/Qt hook, 민감정보 마스킹, 정상·비정상 종료 marker |
 | `src/quotadeck/app/main_window.py`, `tray.py` | worker 실제 종료 기준 수명주기, 안전한 tray 종료 대기, tray/menu 소유권, 60초 health watchdog와 로그 폴더 메뉴 |
 | `src/quotadeck/core/flashbudget.py`, `scheduler.py` | 올림 기반 하루 횟수, 잠금·선예약 기반 Flash 상태 보존, quota/cumulative poll·render·upload |

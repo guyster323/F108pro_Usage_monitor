@@ -551,6 +551,7 @@ def test_runtime_cumulative_poll_renders_engine_cursor_cost(
         AppConfig(
             metric_mode=MetricMode.CUMULATIVE,
             cumulative_period=UsagePeriod.DAILY,
+            fx_auto=False,
         ),
         mock=True,
     )

@@ -149,6 +149,7 @@ class AppConfig:
     cumulative_period: UsagePeriod = field(default_factory=_default_cumulative_period)
     cost_currency: CostCurrency = field(default_factory=_default_cost_currency)
     usd_to_krw_rate: float = DEFAULT_USD_TO_KRW_RATE
+    fx_auto: bool = True
     theme: str = "quotadeck-crew"
     poll_seconds: int = 60
     scene_hold_seconds: int = DEFAULT_SCENE_HOLD_SECONDS
@@ -261,6 +262,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         usd_to_krw_rate=clamp_usd_to_krw_rate(
             raw.get("usd_to_krw_rate", DEFAULT_USD_TO_KRW_RATE)
         ),
+        fx_auto=True if "fx_auto" not in raw else bool(raw.get("fx_auto")),
         theme=raw.get("theme", "quotadeck-crew"),
         poll_seconds=int(raw.get("poll_seconds", 60)),
         scene_hold_seconds=_hold_seconds(raw),
@@ -281,6 +283,7 @@ def save_config(config: AppConfig, path: Path | None = None) -> Path:
     payload["cumulative_period"] = config.cumulative_period.value
     payload["cost_currency"] = config.cost_currency.value
     payload["usd_to_krw_rate"] = clamp_usd_to_krw_rate(config.usd_to_krw_rate)
+    payload["fx_auto"] = bool(config.fx_auto)
     payload["config_version"] = CONFIG_VERSION
     target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return target

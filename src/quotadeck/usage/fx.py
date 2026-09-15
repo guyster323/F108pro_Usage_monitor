@@ -18,6 +18,8 @@ import os
 from pathlib import Path
 import httpx
 
+from quotadeck.tls import tls_verify
+
 
 FX_CACHE_SCHEMA = "quotadeck.fx.v1"
 DEFAULT_USD_KRW_SOURCE_NAME = "api.fiscaldata.treasury.gov"
@@ -287,7 +289,7 @@ def default_fx_fetcher(
     try:
         with httpx.Client(
             timeout=timeout_seconds,
-            verify=True,
+            verify=tls_verify(),
             follow_redirects=True,
         ) as client:
             with client.stream("GET", url) as response:

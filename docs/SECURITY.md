@@ -46,6 +46,22 @@ QuotaDeck cache. The dataset cache is memory-only and expires after a short TTL.
 - `quotadeck prices` reads a dated bundled catalog. It does not send local usage
   or credentials to pricing pages at runtime.
 
+## TLS and corporate CAs
+
+Authenticated provider requests always verify certificates. QuotaDeck never
+sets `verify=False`.
+
+- The HTTPS client uses a verifying SSL context that also loads the OS trust
+  store (Windows `CA`/`ROOT` stores, plus `SSL_CERT_DIR` when set).
+- An explicit PEM bundle can be supplied with `QUOTADECK_CA_BUNDLE` or
+  `SSL_CERT_FILE`. This is the supported path for a corporate inspection CA
+  that is not yet in the OS store.
+- A valid Cursor token with a broken trust chain is a usage-fetch failure, not
+  a logged-out/stale session. Both `usage-summary` and
+  `GetCurrentPeriodUsage` errors are retained. The GUI lock/status hover shows
+  a masked, actionable reason. Hardware or site-specific corporate-CA
+  verification still needs to be confirmed on the target network.
+
 Local history is not cryptographically bound to the account that is signed in
 now. Reusing one CLI profile after logout/login, or using both subscription and
 API-key authentication in that profile, can mix retained records and historical

@@ -5,13 +5,14 @@ import sys
 import time
 from datetime import timedelta
 
-from PySide6.QtCore import QThread, QTimer, Qt, QUrl, Signal, Slot, qVersion
+from PySide6.QtCore import QSize, QThread, QTimer, Qt, QUrl, Signal, Slot, qVersion
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -20,12 +21,25 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
 from quotadeck import __version__
+from quotadeck.app.hint import HintButton
 from quotadeck.app.i18n import tr
+from quotadeck.app.icons import (
+    ICON_BRAIN,
+    ICON_CLOCK,
+    ICON_EXCHANGE,
+    ICON_INFO,
+    ICON_KEYBOARD,
+    ICON_LOCK,
+    ICON_PIN,
+    glyph_icon,
+)
 from quotadeck.app.preview_widget import LcdPreview
 from quotadeck.app.startup import set_launch_at_startup
 from quotadeck.app.stepper import Stepper
@@ -39,10 +53,11 @@ from quotadeck.config import (
     load_config,
     save_config,
 )
-from quotadeck.core.flashbudget import FlashBudget
+from quotadeck.core.flashbudget import ACTIVE_HOURS_PER_DAY, FlashBudget
 from quotadeck.core.mask import mask_text, safe_display_text
 from quotadeck.core.models import DisplayMode, MetricMode, Severity, UsageSnapshot
 from quotadeck.core.scheduler import QuotaDeckRuntime
+from quotadeck.usage.fx import FxFallback, FxRateQuote
 from quotadeck.core.severity import worst_severity
 from quotadeck.diagnostics import DiagnosticSession, configure_diagnostics, diagnostic_log_directory
 from quotadeck.devices.aula_f108.device import aula_software_running, enumerate_interfaces, wired_mode_ok
@@ -78,9 +93,28 @@ QPushButton:disabled { color: #5A6870; border-color: #2A3238; }
 QPushButton#primary { background: #16332B; border-color: #3DDC97; color: #3DDC97; }
 QPushButton#primary:disabled { color: #3A5A50; border-color: #2A4038; }
 QPushButton#lang { min-width: 44px; padding: 6px 10px; }
+QToolButton#hint {
+    background: #1A242C; color: #E8F0F4; border: 1px solid #2A3238; padding: 2px;
+}
+QToolButton#hint:hover, QToolButton#hint:focus { border-color: #3DDC97; }
 QListWidget { background: #141A1E; border: 1px solid #2A3238; }
 QCheckBox { color: #E8F0F4; }
+QScrollArea { border: none; background: #101418; }
 """
+
+
+def cycle_seconds(account_count: int, hold_seconds: int) -> int:
+    return max(0, int(account_count)) * max(0, int(hold_seconds))
+
+
+def _wrap_with_hint(control: QWidget, hint: HintButton) -> QWidget:
+    row = QWidget()
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(6)
+    layout.addWidget(control, 1)
+    layout.addWidget(hint)
+    return row
 
 class Worker(QThread):
     done = Signal(str)
@@ -297,6 +331,10 @@ class AccountRow(QWidget):
         if not extra:
             extra = snapshot.plan or self.account.source_label
         self.meta.setText((extra or "").upper())
+        if snapshot.error:
+            reason = mask_text(snapshot.error)
+            self.meta.setToolTip(reason)
+            self.setToolTip(reason)
 
     def set_snapshot(
         self,
@@ -322,8 +360,12 @@ class AccountRow(QWidget):
             elif snapshot.source_label and snapshot.source_label != "THIS DEVICE":
                 detail = snapshot.source_label
             else:
-                detail = "LOCAL HISTORY N/A · UNKNOWN"
+                detail = "N/A"
             self.meta.setText(detail.upper())
+            if snapshot.error:
+                reason = mask_text(snapshot.error)
+                self.meta.setToolTip(reason)
+                self.setToolTip(reason)
             return
         current_tokens = self._current_tokens(snapshot)
         if current_tokens is None:
@@ -339,22 +381,20 @@ class AccountRow(QWidget):
             self.remaining.setStyleSheet("color:#3DDC97;")
         average_tokens = self._average_tokens(snapshot)
         average = "N/A" if average_tokens is None else compact_token_count(average_tokens)
-        details = [
+        visible = [f"{compact_token_count(current_tokens)} / {average}"]
+        if snapshot.comparison_display:
+            visible.append(snapshot.comparison_display)
+        self.meta.setText(" · ".join(visible).upper())
+        tooltip_lines = [
             f"THIS {compact_token_count(current_tokens)}",
             f"AVG {average} ({snapshot.comparison_display})",
         ]
         models = self._model_breakdown(snapshot)
         if models:
-            top_two = ", ".join(
-                f"{name} {compact_token_count(tokens)}"
-                for name, tokens in models[:2]
-            )
-            details.append(f"MODELS {top_two}")
-            tooltip = "MODEL USAGE — GUI ONLY\n" + "\n".join(
+            tooltip_lines.append("MODEL USAGE — GUI ONLY")
+            tooltip_lines.extend(
                 f"{name}: {tokens:,} TOKENS" for name, tokens in models
             )
-            self.meta.setToolTip(tooltip)
-            self.setToolTip(tooltip)
         current_cost, average_cost = compact_cost_pair(
             snapshot.this_cost_usd,
             snapshot.average_cost_usd,
@@ -367,14 +407,18 @@ class AccountRow(QWidget):
                 if currency is CostCurrency.KRW
                 else currency.value.upper()
             )
-            details.append(
+            tooltip_lines.append(
                 f"LIST {currency_label} THIS {current_cost} / AVG {average_cost}"
             )
         elif snapshot.cost_display:
-            details.append(snapshot.cost_display)
+            tooltip_lines.append(snapshot.cost_display)
         if snapshot.source_label:
-            details.append(snapshot.source_label)
-        self.meta.setText(" · ".join(details).upper())
+            tooltip_lines.append(snapshot.source_label)
+        if snapshot.error:
+            tooltip_lines.append(mask_text(snapshot.error))
+        tooltip = "\n".join(tooltip_lines)
+        self.meta.setToolTip(tooltip)
+        self.setToolTip(tooltip)
 
 class MainWindow(QMainWindow):
     def __init__(self, *, live: bool = True) -> None:
@@ -387,6 +431,7 @@ class MainWindow(QMainWindow):
         self._tray_health: tuple[bool, bool] | None = None
         self._watchdog_ticks = 0
         self._refresh_timer: QTimer | None = None
+        self.setMinimumSize(920, 620)
         self.resize(920, 620)
         log.info("event=main_window_init_start live=%s", live)
         self.config = load_config()
@@ -395,6 +440,7 @@ class MainWindow(QMainWindow):
         self.preview_worker: PreviewWorker | None = None
         self.rows: list[AccountRow] = []
         self._busy = False
+        self._display_refresh_pending = False
         self.tray_show = None
         self.tray_upload = None
         self.tray_logs = None
@@ -403,45 +449,85 @@ class MainWindow(QMainWindow):
         self.tray = None
         root = QWidget()
         layout = QHBoxLayout(root)
-        left = QVBoxLayout()
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        left_host = QWidget()
+        left = QVBoxLayout(left_host)
+        left.setContentsMargins(0, 0, 0, 0)
         header = QHBoxLayout()
         self.title = QLabel()
         self.title.setStyleSheet("font-size:16px; font-weight:600;")
+        self.accounts_hint_btn = HintButton(ICON_INFO)
         self.lang_btn = QPushButton()
         self.lang_btn.setObjectName("lang")
         self.lang_btn.clicked.connect(self.toggle_language)
         header.addWidget(self.title, 1)
+        header.addWidget(self.accounts_hint_btn)
         header.addWidget(self.lang_btn)
         self.hint = QLabel()
         self.hint.setWordWrap(True)
         self.hint.setStyleSheet("color:#8CB4B0;")
+        self.hint.hide()
         left.addLayout(header)
         left.addWidget(self.hint)
         self.list = QListWidget()
         self.list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
-        left.addWidget(self.list)
+        self.list.setMinimumHeight(160)
+        self.list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        left.addWidget(self.list, 1)
         form = QFormLayout()
+        form.setSpacing(6)
         # QPaintDevice.metric() is a virtual Qt method. A widget named `metric`
         # shadows it so layout/paint calls raise TypeError: QComboBox is not
         # callable, which the event loop reports as an unhandled exception.
         self.metric_combo = QComboBox()
         self.metric_combo.currentIndexChanged.connect(self._metric_changed)
+        self.metric_hint = HintButton(ICON_INFO)
         self.period = QComboBox()
         self.period.currentIndexChanged.connect(self._cumulative_setting_changed)
+        self.period_hint = HintButton(ICON_INFO)
         self.currency = QComboBox()
         self.currency.currentIndexChanged.connect(self._cumulative_setting_changed)
+        self.currency_hint = HintButton(ICON_INFO)
+        self.fx_auto = QCheckBox()
+        self.fx_auto.setChecked(self.config.fx_auto)
+        self.fx_auto.stateChanged.connect(self._cumulative_setting_changed)
         self.exchange_rate = Stepper(
             minimum=round(MIN_USD_TO_KRW_RATE),
             maximum=round(MAX_USD_TO_KRW_RATE),
             value=round(self.config.usd_to_krw_rate),
         )
         self.exchange_rate.valueChanged.connect(self._cumulative_setting_changed)
+        self.fx_status = QLabel("")
+        self.fx_status.setStyleSheet("color:#8CB4B0;")
+        self.exchange_hint = HintButton(ICON_EXCHANGE)
+        fx_row = QWidget()
+        fx_layout = QHBoxLayout(fx_row)
+        fx_layout.setContentsMargins(0, 0, 0, 0)
+        fx_layout.setSpacing(6)
+        fx_layout.addWidget(self.fx_auto)
+        fx_layout.addWidget(self.exchange_rate, 1)
+        fx_layout.addWidget(self.fx_status)
         self.mode = QComboBox()
+        self.mode.currentIndexChanged.connect(lambda _index: self.update_metric_hint())
+        self.order_hint = HintButton(ICON_BRAIN)
         self.poll = Stepper(minimum=15, maximum=600, value=self.config.poll_seconds)
         self.poll.setToolTip("")
+        self.poll_hint = HintButton(ICON_INFO)
         self.hold = Stepper(minimum=2, maximum=20, value=self.config.scene_hold_seconds)
+        self.hold.valueChanged.connect(self.update_hold_cycle)
+        self.hold_cycle = QLabel("")
+        self.hold_cycle.setStyleSheet("color:#8CB4B0;")
+        self.hold_hint = HintButton(ICON_CLOCK)
+        hold_row = QWidget()
+        hold_layout = QHBoxLayout(hold_row)
+        hold_layout.setContentsMargins(0, 0, 0, 0)
+        hold_layout.setSpacing(6)
+        hold_layout.addWidget(self.hold, 1)
+        hold_layout.addWidget(self.hold_cycle)
         self.min_up = Stepper(minimum=1, maximum=120, value=self.config.min_upload_minutes)
         self.min_up.valueChanged.connect(self.update_flash_label)
+        self.upload_hint = HintButton(ICON_CLOCK)
         self.startup = QCheckBox()
         self.startup.setChecked(self.config.launch_at_startup)
         self.lbl_metric = QLabel()
@@ -452,24 +538,35 @@ class MainWindow(QMainWindow):
         self.lbl_poll = QLabel()
         self.lbl_hold = QLabel()
         self.lbl_upload = QLabel()
-        form.addRow(self.lbl_metric, self.metric_combo)
-        form.addRow(self.lbl_period, self.period)
-        form.addRow(self.lbl_currency, self.currency)
-        form.addRow(self.lbl_exchange_rate, self.exchange_rate)
-        form.addRow(self.lbl_mode, self.mode)
-        form.addRow(self.lbl_poll, self.poll)
-        form.addRow(self.lbl_hold, self.hold)
-        form.addRow(self.lbl_upload, self.min_up)
+        self.metric_row = _wrap_with_hint(self.metric_combo, self.metric_hint)
+        self.period_row = _wrap_with_hint(self.period, self.period_hint)
+        self.currency_row = _wrap_with_hint(self.currency, self.currency_hint)
+        self.fx_row = _wrap_with_hint(fx_row, self.exchange_hint)
+        self.mode_row = _wrap_with_hint(self.mode, self.order_hint)
+        self.poll_row = _wrap_with_hint(self.poll, self.poll_hint)
+        self.hold_row = _wrap_with_hint(hold_row, self.hold_hint)
+        self.upload_row = _wrap_with_hint(self.min_up, self.upload_hint)
+        form.addRow(self.lbl_metric, self.metric_row)
+        form.addRow(self.lbl_period, self.period_row)
+        form.addRow(self.lbl_currency, self.currency_row)
+        form.addRow(self.lbl_exchange_rate, self.fx_row)
+        form.addRow(self.lbl_mode, self.mode_row)
+        form.addRow(self.lbl_poll, self.poll_row)
+        form.addRow(self.lbl_hold, self.hold_row)
+        form.addRow(self.lbl_upload, self.upload_row)
         form.addRow(self.startup)
         self.timing_hint = QLabel()
         self.timing_hint.setWordWrap(True)
         self.timing_hint.setStyleSheet("color:#8CB4B0;")
+        self.timing_hint.hide()
         self.price_hint = QLabel()
         self.price_hint.setWordWrap(True)
         self.price_hint.setStyleSheet("color:#8CB4B0;")
+        self.price_hint.hide()
         self.krw_unit_hint = QLabel()
         self.krw_unit_hint.setWordWrap(True)
         self.krw_unit_hint.setStyleSheet("color:#F0C440; font-weight:600;")
+        self.krw_unit_hint.hide()
         left.addLayout(form)
         left.addWidget(self.krw_unit_hint)
         left.addWidget(self.timing_hint)
@@ -489,25 +586,47 @@ class MainWindow(QMainWindow):
         buttons.addWidget(self.apply_btn)
         buttons.addWidget(self.upload_btn)
         left.addLayout(buttons)
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        left_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        left_scroll.setWidget(left_host)
+        left_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         right = QVBoxLayout()
+        right.setContentsMargins(0, 0, 0, 0)
+        preview_header = QHBoxLayout()
         self.preview_title = QLabel()
         self.keyboard = QLabel("")
+        self.keyboard_hint = HintButton(ICON_KEYBOARD)
+        preview_header.addWidget(self.preview_title, 1)
+        preview_header.addWidget(self.keyboard)
+        preview_header.addWidget(self.keyboard_hint)
         self.preview = LcdPreview(3)
+        status_row = QHBoxLayout()
         self.status = QLabel()
+        self.status.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.lock_hint = HintButton(ICON_LOCK)
+        status_row.addWidget(self.status, 1)
+        status_row.addWidget(self.lock_hint)
+        flash_row = QHBoxLayout()
         self.flash = QLabel("")
-        self.flash.setWordWrap(True)
         self.flash.setStyleSheet("color:#8CB4B0;")
+        self.flash_hint = HintButton(ICON_CLOCK)
+        flash_row.addWidget(self.flash, 1)
+        flash_row.addWidget(self.flash_hint)
+        missing_row = QHBoxLayout()
         self.missing = QLabel("")
-        self.missing.setWordWrap(True)
         self.missing.setStyleSheet("color:#8CB4B0;")
-        right.addWidget(self.preview_title)
-        right.addWidget(self.keyboard)
-        right.addWidget(self.preview)
-        right.addWidget(self.status)
-        right.addWidget(self.flash)
-        right.addWidget(self.missing)
-        right.addStretch()
-        layout.addLayout(left, 3)
+        self.missing_hint = HintButton(ICON_LOCK)
+        missing_row.addWidget(self.missing, 1)
+        missing_row.addWidget(self.missing_hint)
+        right.addLayout(preview_header)
+        right.addWidget(self.preview, 1)
+        right.addLayout(status_row)
+        right.addLayout(flash_row)
+        right.addLayout(missing_row)
+        layout.addWidget(left_scroll, 3)
         layout.addLayout(right, 2)
         self.setCentralWidget(root)
         self.reload_accounts()
@@ -534,6 +653,9 @@ class MainWindow(QMainWindow):
         else:
             self._tray_watchdog = None
         log.info("event=main_window_init_ready live=%s accounts=%d", live, len(self.config.accounts))
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(920, 620)
 
     def _lang(self) -> str:
         return "en" if self.config.ui_language == "en" else "ko"
@@ -571,14 +693,16 @@ class MainWindow(QMainWindow):
         current = self.mode.currentData() or self.config.display_mode.value
         self.mode.blockSignals(True)
         self.mode.clear()
-        self.mode.addItem(self._t("mode_smart"), "smart")
-        self.mode.addItem(self._t("mode_fixed"), "fixed")
+        self.mode.addItem(glyph_icon(ICON_BRAIN), self._t("mode_smart"), "smart")
+        self.mode.addItem(glyph_icon(ICON_PIN), self._t("mode_fixed"), "fixed")
         index = self.mode.findData(current)
         self.mode.setCurrentIndex(index if index >= 0 else 0)
         self.mode.blockSignals(False)
         self.setWindowTitle(self._t("window_title"))
         self.title.setText(self._t("accounts_title"))
+        self.title.setToolTip(self._t("accounts_hint"))
         self.hint.setText(self._t("accounts_hint"))
+        self.accounts_hint_btn.apply_copy(self._t("hint_info"), self._t("accounts_hint"))
         self.lbl_metric.setText(self._t("metric_mode"))
         self.lbl_period.setText(self._t("comparison_period"))
         self.lbl_currency.setText(self._t("cost_currency"))
@@ -591,15 +715,26 @@ class MainWindow(QMainWindow):
         self.hold.setSuffix(self._t("suffix_sec"))
         self.min_up.setSuffix(self._t("suffix_min"))
         self.exchange_rate.setSuffix(self._t("exchange_rate_suffix"))
+        self.fx_auto.setText(self._t("fx_auto"))
         self.poll.setToolTip(self._t("poll_tip"))
         self.hold.setToolTip(self._t("hold_tip"))
         self.min_up.setToolTip(self._t("upload_tip"))
         self.period.setToolTip(self._t("period_tip"))
         self.currency.setToolTip(self._t("currency_tip"))
         self.exchange_rate.setToolTip(self._t("exchange_rate_tip"))
+        self.fx_auto.setToolTip(self._t("fx_auto_tip"))
+        self.metric_combo.setToolTip(self._t("metric_tip"))
+        self.mode.setToolTip(self._t("mode_smart_tip") if (self.mode.currentData() or "smart") == "smart" else self._t("mode_fixed_tip"))
+        self.metric_hint.apply_copy(self._t("hint_info"), self._t("metric_tip"))
+        self.period_hint.apply_copy(self._t("hint_info"), self._t("period_tip"))
+        self.currency_hint.apply_copy(self._t("hint_info"), self._t("currency_tip"))
+        self.poll_hint.apply_copy(self._t("hint_info"), self._t("poll_tip"))
+        self.upload_hint.apply_copy(self._t("hint_clock"), self._t("upload_tip"))
         self.krw_unit_hint.setText(self._t("krw_unit_hint"))
         self.timing_hint.setText(self._t("timing_hint"))
         self.update_metric_hint()
+        self.update_hold_cycle()
+        self.update_fx_status()
         self.startup.setText(self._t("startup"))
         self.detect_btn.setText(self._t("detect"))
         self.preview_btn.setText(self._t("preview"))
@@ -614,16 +749,18 @@ class MainWindow(QMainWindow):
         self.update_flash_label()
         self.update_keyboard_status()
         self.update_missing_label()
+        self.update_lock_status()
 
     def _metric_changed(self, _index: int) -> None:
         self.update_metric_hint()
-        for row in self.rows:
-            row.set_snapshot(None)
+        self._restore_cached_snapshots()
+        self._refresh_display_async(save=False)
 
     def _cumulative_setting_changed(self, _value: int) -> None:
         self.update_metric_hint()
-        for row in self.rows:
-            row.set_snapshot(None)
+        self.update_fx_status()
+        self._restore_cached_snapshots()
+        self._refresh_display_async(save=False)
 
     def update_metric_hint(self) -> None:
         cumulative = (
@@ -631,17 +768,14 @@ class MainWindow(QMainWindow):
         ) == "cumulative"
         currency = self.currency.currentData() or self.config.cost_currency.value
         uses_krw = currency == CostCurrency.KRW.value
-        for widget in (
-            self.lbl_period,
-            self.period,
-            self.lbl_currency,
-            self.currency,
-        ):
+        for widget in (self.lbl_period, self.period_row):
             widget.setVisible(cumulative)
-        for widget in (self.lbl_exchange_rate, self.exchange_rate):
+        for widget in (self.lbl_currency, self.currency_row):
+            widget.setVisible(cumulative)
+        for widget in (self.lbl_exchange_rate, self.fx_row):
             widget.setVisible(cumulative and uses_krw)
-        self.krw_unit_hint.setVisible(cumulative and uses_krw)
-        self.price_hint.setVisible(cumulative)
+        self.krw_unit_hint.setVisible(False)
+        self.price_hint.setVisible(False)
         if cumulative:
             self.price_hint.setText(
                 self._t(
@@ -650,6 +784,128 @@ class MainWindow(QMainWindow):
                     rate=self.exchange_rate.value(),
                 )
             )
+            self.exchange_hint.apply_copy(
+                self._t("hint_exchange"),
+                "\n".join(
+                    part
+                    for part in (
+                        self._t("fx_auto_tip"),
+                        self._t("exchange_rate_tip"),
+                        self._t("krw_unit_hint") if uses_krw else "",
+                        self.price_hint.text(),
+                    )
+                    if part
+                ),
+            )
+        smart = (self.mode.currentData() or "smart") == "smart"
+        self.order_hint.setIcon(glyph_icon(ICON_BRAIN if smart else ICON_PIN))
+        self.order_hint.apply_copy(
+            self._t("hint_order"),
+            self._t("mode_smart_tip") if smart else self._t("mode_fixed_tip"),
+        )
+        self.mode.setToolTip(self._t("mode_smart_tip") if smart else self._t("mode_fixed_tip"))
+
+    def update_hold_cycle(self) -> None:
+        enabled = sum(1 for row in self.rows if row.check.isChecked()) or len(self.rows)
+        hold = self.hold.value()
+        cycle = cycle_seconds(enabled, hold)
+        self.hold_cycle.setText(self._t("hold_cycle", hold=hold, cycle=cycle))
+        tip = self._t("hold_cycle_tip", hold=hold, count=enabled, cycle=cycle)
+        self.hold_cycle.setToolTip(tip)
+        self.hold.setToolTip(f"{self._t('hold_tip')}\n{tip}")
+        self.hold_hint.apply_copy(self._t("hint_clock"), f"{self._t('hold_tip')}\n{tip}")
+
+    def update_fx_status(self) -> None:
+        quote = getattr(self.runtime, "state", None)
+        fx: FxRateQuote | None = getattr(quote, "fx_quote", None) if quote is not None else None
+        if not self.fx_auto.isChecked():
+            text = self._t("fx_source_manual", rate=self.exchange_rate.value())
+        elif fx is None:
+            text = self._t("fx_pending")
+        elif fx.reason and not fx.available:
+            text = self._t("fx_source_error", reason=mask_text(fx.reason))
+        elif fx.fallback is FxFallback.LIVE:
+            text = self._t(
+                "fx_source_live",
+                as_of=fx.as_of or "—",
+                rate=fx.usd_to_krw,
+            )
+        elif fx.fallback is FxFallback.LAST_KNOWN_GOOD:
+            text = self._t(
+                "fx_source_cache",
+                as_of=fx.as_of or "—",
+                rate=fx.usd_to_krw,
+            )
+        else:
+            text = self._t(
+                "fx_source_manual",
+                rate=fx.usd_to_krw if fx.available else self.exchange_rate.value(),
+            )
+        self.fx_status.setText(text)
+        self.fx_status.setToolTip(text)
+        extra = []
+        if fx is not None:
+            extra.append(text)
+            if fx.source:
+                extra.append(fx.source)
+            if fx.reason:
+                extra.append(mask_text(fx.reason))
+        self.exchange_hint.apply_copy(
+            self._t("hint_exchange"),
+            "\n".join(
+                part
+                for part in (
+                    self._t("fx_auto_tip"),
+                    self._t("exchange_rate_tip"),
+                    self._t("krw_unit_hint"),
+                    *extra,
+                )
+                if part
+            ),
+        )
+
+    def _restore_cached_snapshots(self) -> None:
+        runtime = self.runtime
+        if not hasattr(runtime, "cached_snapshots"):
+            return
+        cfg = self.collect_config()
+        snapshots = runtime.cached_snapshots(
+            keys=[f"{item.provider}:{item.account_id}" for item in cfg.accounts],
+            metric=cfg.metric_mode,
+            period=cfg.cumulative_period,
+        )
+        if snapshots:
+            self._apply_snapshots(snapshots)
+            return
+        for row in self.rows:
+            row.set_snapshot(None)
+
+    def _adopt_runtime_config(self, candidate: AppConfig) -> None:
+        self.config = candidate
+        if candidate == getattr(self.runtime, "config", None):
+            return
+        previous = getattr(self.runtime, "state", None)
+        self.runtime = QuotaDeckRuntime(candidate)
+        if hasattr(self.runtime, "adopt_display_state"):
+            self.runtime.adopt_display_state(previous)
+
+    def _refresh_display_async(self, *, save: bool = False) -> None:
+        if not self._live or self._busy or self._quit_requested:
+            return
+        if save:
+            if not self.apply():
+                return
+        else:
+            self._adopt_runtime_config(self.collect_config())
+        self.set_busy(True)
+        self.status.setText(self._t("status_reading"))
+        self.preview_worker = PreviewWorker(self.runtime, self)
+        self.preview_worker.done.connect(self._on_preview)
+        self.preview_worker.failed.connect(self._on_automatic_fail)
+        try:
+            self._start_thread(self.preview_worker, "display-refresh")
+        except Exception as exc:
+            self._on_automatic_fail(mask_text(str(exc)))
 
     def _apply_tray_language(self) -> None:
         if self.tray_show is None:
@@ -686,8 +942,11 @@ class MainWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole, account)
             self.list.addItem(item)
             self.list.setItemWidget(item, row)
+            row.check.stateChanged.connect(lambda *_args: self.update_hold_cycle())
             self.rows.append(row)
         self.update_missing_label()
+        self.update_hold_cycle()
+        self._restore_cached_snapshots()
     def collect_config(self) -> AppConfig:
         accounts: list[AccountConfig] = []
         for index in range(self.list.count()):
@@ -698,10 +957,22 @@ class MainWindow(QMainWindow):
                 continue
             base: AccountConfig = item.data(Qt.ItemDataRole.UserRole)
             accounts.append(base)
-        mode = self.mode.currentData() or self.mode.currentText()
-        metric = self.metric_combo.currentData() or self.metric_combo.currentText()
-        period = self.period.currentData() or self.period.currentText()
-        currency = self.currency.currentData() or self.currency.currentText()
+        mode = self.mode.currentData() or self.mode.currentText() or self.config.display_mode.value
+        metric = (
+            self.metric_combo.currentData()
+            or self.metric_combo.currentText()
+            or self.config.metric_mode.value
+        )
+        period = (
+            self.period.currentData()
+            or self.period.currentText()
+            or self.config.cumulative_period.value
+        )
+        currency = (
+            self.currency.currentData()
+            or self.currency.currentText()
+            or self.config.cost_currency.value
+        )
         return AppConfig(
             accounts=accounts,
             display_mode=DisplayMode(str(mode)),
@@ -709,6 +980,7 @@ class MainWindow(QMainWindow):
             cumulative_period=UsagePeriod(str(period)),
             cost_currency=CostCurrency(str(currency)),
             usd_to_krw_rate=float(self.exchange_rate.value()),
+            fx_auto=self.fx_auto.isChecked(),
             theme=self.config.theme,
             poll_seconds=self.poll.value(),
             scene_hold_seconds=self.hold.value(),
@@ -742,8 +1014,9 @@ class MainWindow(QMainWindow):
             )
         self.config.accounts = merged
         self.reload_accounts()
+        self._restore_cached_snapshots()
         self.status.setText(self._t("status_found", count=len(found)))
-        self.refresh_preview()
+        self._refresh_display_async(save=False)
 
     def apply(self) -> bool:
         try:
@@ -757,7 +1030,12 @@ class MainWindow(QMainWindow):
         if runtime_changed and self._refresh_timer is not None:
             self._refresh_timer.stop()
         try:
-            replacement = QuotaDeckRuntime(candidate) if runtime_changed else self.runtime
+            if runtime_changed:
+                previous = self.runtime.state
+                replacement = QuotaDeckRuntime(candidate)
+                replacement.adopt_display_state(previous)
+            else:
+                replacement = self.runtime
         except Exception as exc:
             log.exception("event=runtime_reconfigure_failed")
             self._show_failure(mask_text(str(exc)))
@@ -935,16 +1213,20 @@ class MainWindow(QMainWindow):
     def _on_preview(self, snapshots, frames) -> None:
         self._apply_snapshots(snapshots)
         self._update_tray_status(snapshots)
+        self.update_fx_status()
+        self.update_lock_status(snapshots)
         if frames:
             self.preview.show_frames(frames)
         count = len(snapshots)
         enabled = sum(1 for item in self.config.accounts if item.enabled)
+        hold = self.config.scene_hold_seconds
         self.status.setText(
             self._t(
                 "status_preview",
                 enabled=enabled,
                 count=count,
-                hold=self.config.scene_hold_seconds,
+                hold=hold,
+                cycle=cycle_seconds(enabled, hold),
             )
         )
     def _on_done(self, message: str) -> None:
@@ -954,6 +1236,8 @@ class MainWindow(QMainWindow):
             self.preview.show_frames(frames)
         self._apply_snapshots(self.runtime.state.last_polled)
         self._update_tray_status(self.runtime.state.last_polled)
+        self.update_fx_status()
+        self.update_lock_status(self.runtime.state.last_polled)
 
     def _update_tray_status(
         self,
@@ -974,12 +1258,19 @@ class MainWindow(QMainWindow):
         self,
         snapshots: list[UsageSnapshot | CumulativeSnapshot],
     ) -> None:
+        if hasattr(self.runtime, "remember_snapshots"):
+            self.runtime.remember_snapshots(list(snapshots))
         by_key = {item.key: item for item in snapshots}
+        rate = (
+            self.runtime.effective_usd_to_krw_rate()
+            if hasattr(self.runtime, "effective_usd_to_krw_rate")
+            else self.config.usd_to_krw_rate
+        )
         for row in self.rows:
             row.set_snapshot(
                 by_key.get(f"{row.account.provider}:{row.account.account_id}"),
                 currency=self.config.cost_currency,
-                usd_to_krw_rate=self.config.usd_to_krw_rate,
+                usd_to_krw_rate=rate,
                 krw_cost_label=self._t("currency_krw"),
             )
 
@@ -1004,6 +1295,36 @@ class MainWindow(QMainWindow):
     def _show_failure(self, message: str) -> None:
         QMessageBox.warning(self, "QuotaDeck", message)
         self.status.setText(message)
+    def update_lock_status(self, snapshots: list | None = None) -> None:
+        items = snapshots if snapshots is not None else getattr(self.runtime.state, "last_polled", [])
+        reasons: list[str] = []
+        for snap in items:
+            error = getattr(snap, "error", None)
+            status = getattr(snap, "status", "")
+            provider = getattr(snap, "provider", "")
+            if not error:
+                continue
+            masked = mask_text(str(error))
+            if status == "offline":
+                reasons.append(
+                    self._t("lock_not_signed_in", reason=f"{provider}: {masked}")
+                )
+            elif status == "stale":
+                reasons.append(self._t("lock_stale", reason=f"{provider}: {masked}"))
+            else:
+                reasons.append(
+                    self._t("lock_signed_in_usage", reason=f"{provider}: {masked}")
+                )
+        if reasons:
+            detail = "\n".join(reasons)
+        else:
+            detail = self._t("lock_ok")
+        self.lock_hint.apply_copy(self._t("hint_lock"), detail)
+        if reasons:
+            self.status.setToolTip(detail)
+        elif not self.status.toolTip():
+            self.status.setToolTip(detail)
+
     def update_flash_label(self) -> None:
         budget = FlashBudget(
             min_interval=timedelta(minutes=self.min_up.value()),
@@ -1013,30 +1334,47 @@ class MainWindow(QMainWindow):
         years = budget.estimated_years(cap=False)
         self.flash.setText(
             self._t(
-                "flash",
+                "flash_compact",
                 daily=daily,
                 limit=budget.daily_limit,
-                years=years,
             )
         )
+        tip = self._t(
+            "flash_tip",
+            hours=ACTIVE_HOURS_PER_DAY,
+            daily=daily,
+            limit=budget.daily_limit,
+            years=years,
+        )
+        self.flash.setToolTip(tip)
+        self.flash_hint.apply_copy(self._t("hint_clock"), tip)
     def update_keyboard_status(self) -> None:
         interfaces = enumerate_interfaces()
         running = aula_software_running()
         if wired_mode_ok(interfaces):
             extra = self._t("kb_aula", names=", ".join(running)) if running else ""
-            self.keyboard.setText(self._t("kb_wired", extra=extra))
+            compact = self._t("kb_compact_wired")
+            detail = self._t("kb_wired", extra=extra)
             self.keyboard.setStyleSheet("color:#3DDC97;")
         elif interfaces:
-            self.keyboard.setText(self._t("kb_seen"))
+            compact = self._t("kb_compact_seen")
+            detail = self._t("kb_seen")
             self.keyboard.setStyleSheet("color:#F0C440;")
         else:
-            self.keyboard.setText(self._t("kb_missing"))
+            compact = self._t("kb_compact_missing")
+            detail = self._t("kb_missing")
             self.keyboard.setStyleSheet("color:#FF783C;")
+        self.keyboard.setText(compact)
+        self.keyboard.setToolTip(detail)
+        self.keyboard_hint.apply_copy(self._t("hint_keyboard"), detail)
     def update_missing_label(self) -> None:
         present = {item.provider for item in self.config.accounts}
         missing = [name for name in ("codex", "cursor", "claude", "grok") if name not in present]
         if not missing:
-            self.missing.setText(self._t("found_all"))
+            detail = self._t("found_all")
+            self.missing.setText(self._t("found_all_compact"))
+            self.missing.setToolTip(detail)
+            self.missing_hint.apply_copy(self._t("hint_lock"), detail)
             return
         hints = {
             "codex": self._t("hint_codex"),
@@ -1044,13 +1382,15 @@ class MainWindow(QMainWindow):
             "claude": self._t("hint_claude"),
             "grok": self._t("hint_grok"),
         }
-        self.missing.setText(
-            self._t(
-                "missing",
-                names=", ".join(name.upper() for name in missing),
-                hints=" · ".join(hints[name] for name in missing),
-            )
+        names = ", ".join(name.upper() for name in missing)
+        detail = self._t(
+            "missing",
+            names=names,
+            hints=" · ".join(hints[name] for name in missing),
         )
+        self.missing.setText(self._t("missing_compact", names=names))
+        self.missing.setToolTip(detail)
+        self.missing_hint.apply_copy(self._t("hint_lock"), detail)
     def show_from_tray(self) -> None:
         log.info("event=tray_open_requested")
         self.showNormal()

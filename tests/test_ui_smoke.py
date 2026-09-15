@@ -363,3 +363,149 @@ def test_event_loop_startup_does_not_shadow_paint_device_metric(
         window.close()
         app.processEvents()
         assert app is not None
+
+
+def test_main_window_fits_design_size_and_keeps_account_list() -> None:
+    from PySide6.QtWidgets import QApplication
+
+    from quotadeck.app.main_window import MainWindow, cycle_seconds
+    from quotadeck.config import AccountConfig, AppConfig
+    from quotadeck.devices.aula_f108.constants import LCD_HEIGHT, LCD_WIDTH
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(live=False)
+    window.config = AppConfig(
+        accounts=[
+            AccountConfig("codex", "demo", "TEAM", True),
+            AccountConfig("cursor", "demo2", "CUR", True),
+            AccountConfig("claude", "demo3", "CLD", True),
+        ]
+    )
+    window.reload_accounts()
+    window.resize(920, 620)
+    window.show()
+    app.processEvents()
+    assert window.sizeHint().width() <= 920
+    assert window.sizeHint().height() <= 620
+    assert window.list.minimumHeight() >= 140
+    assert window.list.height() >= 140
+    assert window.preview.width() >= LCD_WIDTH
+    assert window.preview.height() >= LCD_HEIGHT
+    assert window.preview.width() <= 720 or window.height() > 620
+    assert cycle_seconds(3, 5) == 15
+    assert window.hold_cycle.text()
+    assert "15" in window.hold_cycle.text()
+    assert window.hold_hint.toolTip()
+    assert "15" in window.hold_hint.toolTip()
+    for button in (
+        window.accounts_hint_btn,
+        window.hold_hint,
+        window.flash_hint,
+        window.keyboard_hint,
+        window.lock_hint,
+        window.order_hint,
+    ):
+        assert button.accessibleName()
+        assert button.accessibleDescription()
+        assert button.statusTip()
+        assert button.toolTip()
+        assert button.whatsThis()
+        assert button.focusPolicy().name == "StrongFocus"
+    window.close()
+    assert app is not None
+
+
+def test_smart_and_fixed_labels_use_icons_and_hover_copy() -> None:
+    from PySide6.QtWidgets import QApplication
+
+    from quotadeck.app.main_window import MainWindow
+    from quotadeck.core.models import DisplayMode
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(live=False)
+    window.config.ui_language = "en"
+    window.apply_language()
+    smart = window.mode.findData(DisplayMode.SMART.value)
+    fixed = window.mode.findData(DisplayMode.FIXED.value)
+    assert "Smart" in window.mode.itemText(smart)
+    assert "Fixed" in window.mode.itemText(fixed)
+    assert not window.mode.itemIcon(smart).isNull()
+    assert not window.mode.itemIcon(fixed).isNull()
+    window.mode.setCurrentIndex(smart)
+    assert "urgent" in window.mode.toolTip().lower() or "ratio" in window.mode.toolTip().lower()
+    window.mode.setCurrentIndex(fixed)
+    assert "list order" in window.mode.toolTip().lower()
+    window.close()
+    assert app is not None
+
+
+def test_lock_hover_distinguishes_offline_stale_and_tls_usage_error() -> None:
+    from datetime import datetime, timezone
+
+    from PySide6.QtWidgets import QApplication
+
+    from quotadeck.app.main_window import MainWindow
+    from quotadeck.core.models import UsageSnapshot
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(live=False)
+    window.config.ui_language = "en"
+    window.apply_language()
+    fetched = datetime.now(timezone.utc)
+
+    window.update_lock_status(
+        [
+            UsageSnapshot(
+                "cursor",
+                "user-1",
+                "USER",
+                "pro",
+                [],
+                "offline",
+                fetched,
+                error="Cursor is not signed in",
+            )
+        ]
+    )
+    offline = window.lock_hint.toolTip().lower()
+    assert "not signed in" in offline
+    assert "usage fetch failed" not in offline
+
+    window.update_lock_status(
+        [
+            UsageSnapshot(
+                "cursor",
+                "user-1",
+                "USER",
+                "pro",
+                [],
+                "stale",
+                fetched,
+                error="401 unauthorized",
+            )
+        ]
+    )
+    stale = window.lock_hint.toolTip().lower()
+    assert "expired" in stale
+    assert "usage fetch failed" not in stale
+
+    window.update_lock_status(
+        [
+            UsageSnapshot(
+                "cursor",
+                "user-1",
+                "USER",
+                "pro",
+                [],
+                "error",
+                fetched,
+                error="TLS verification failed usage-summary GetCurrentPeriodUsage",
+            )
+        ]
+    )
+    usage = window.lock_hint.toolTip().lower()
+    assert "usage fetch failed" in usage
+    assert "signed in" in usage
+    assert "not signed in" not in usage
+    window.close()
+    assert app is not None

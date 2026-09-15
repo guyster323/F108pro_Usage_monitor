@@ -27,4 +27,9 @@ def test_tls_verification_failure_never_retries_insecurely(monkeypatch) -> None:
     with pytest.raises(httpx.ConnectError):
         http.get("https://example.invalid")
 
-    assert verify_values == [True]
+    assert verify_values
+    assert False not in verify_values
+    for value in verify_values:
+        assert value is not False
+        if value is not True:
+            assert getattr(value, "verify_mode") == __import__("ssl").CERT_REQUIRED

@@ -186,10 +186,10 @@ reacts with five surprise states:
 | `≥ 3.0×` | Comically collapsed |
 
 Cost uses the bundled snapshot of official API list prices dated 2026-09-11.
-Choose **KRW** or **USD** in settings. KRW conversion uses the manually entered
-rate (default **1,400 KRW/USD**) on the LCD path; `quotadeck usage-engine`
-can also apply a fetched Treasury quote with last-known-good then manual
-fallback. `THIS` and `AVG` are independently calculated from the
+Choose **KRW** or **USD** in settings. KRW conversion defaults to **Auto FX**:
+the official U.S. Treasury quarterly reporting rate (not a realtime spot quote),
+then the last-known-good cache, then the **1,400 KRW/USD** manual fallback.
+`quotadeck usage-engine` uses the same chain. `THIS` and `AVG` are independently calculated from the
 actual model/token mix in those periods, but the pair is all-or-nothing: if
 either side cannot be priced completely, both are `N/A`. These are list-price
 equivalents of observed tokens, not actual spend or an invoice; the current
@@ -234,9 +234,11 @@ In the settings app:
 - **Comparison period** — in cumulative mode, choose **Daily** (today / prior
   completed-day average) or **Monthly** (month-to-date / prior completed-month
   average).
-- **Cost currency** — choose **KRW (10,000 won)** or **USD**. KRW uses the
-  editable manual exchange rate, which defaults to 1,400 KRW/USD and is never
-  fetched live. The KRW K/M/B scale legend is shown directly in settings.
+- **Cost currency** — choose **KRW (10,000 won)** or **USD**. KRW defaults to
+  **Auto FX**: official U.S. Treasury quarterly reporting rate (not a realtime
+  spot quote), then cache, then the 1,400 KRW/USD manual fallback. Source,
+  as-of, and errors are on the exchange-icon hover. The KRW K/M/B scale legend
+  is also on hover.
 - **Detect** — rescan CLI/app logins on this PC.
 - Checkboxes — only checked accounts rotate on the LCD. The alias is what the HUD shows.
 - **Preview** — the selected remaining/cumulative HUD without writing flash.
@@ -244,17 +246,17 @@ In the settings app:
 - **Upload now** — write the selected accounts to the F108 Pro **user GIF slot**. Buttons lock while the transfer is running.
 
 The current settings schema is **config v5**. It persists
-`cumulative_period`, `cost_currency`, and `usd_to_krw_rate`; older settings are
-migrated safely, with Monthly, KRW, and 1,400 KRW/USD used when those fields are
-missing.
+`cumulative_period`, `cost_currency`, `usd_to_krw_rate`, and `fx_auto`; older
+settings are migrated safely, with Monthly, KRW, Auto FX, and a 1,400 KRW/USD
+manual fallback used when those fields are missing.
 
 Default timings are **60 seconds / 5 seconds / 10 minutes**. They are not the same clock.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | **Usage poll** | 60 s | How often this PC re-reads provider APIs or local history. This count is not the flash-write count. |
-| **Time per account** | 5 s | Total full-screen time, including character animation. Configurable in the app. |
-| **Keyboard write** | 10 min | Minimum interval before rewriting onboard storage. |
+| **Time per account** | 5 s | Total full-screen time, including character animation. N accounts take about N×5 seconds; dwell is not multiplied again. |
+| **Keyboard write** | 10 min | Minimum interval before rewriting onboard storage. Daily estimates assume 16 active hours (10 min ≈ 96, 7 min ≈ 138), distinct from the safety cap. |
 
 New settings, or settings without the field, default to 5 seconds. Upgrades
 preserve an existing `scene_hold_seconds` value from 2–20 seconds, so change an
@@ -340,6 +342,7 @@ limited to 100 actual writes/day by default).
 - Write the user GIF slot (`image_number = 1`). Slot 0 is the factory GIF.
 - USB-C wired mode only (`Fn+4`).
 - Do not write flash faster than needed. The default is 10 minutes. Faster intervals reduce lifespan.
+- Never disable TLS verification. If a corporate proxy or self-signed CA blocks Cursor usage APIs, install the CA in the OS trust store or set `QUOTADECK_CA_BUNDLE` (or `SSL_CERT_FILE`) to a PEM bundle. Login vs usage-fetch failures are distinguished on the lock/status hover.
 
 ## More
 
