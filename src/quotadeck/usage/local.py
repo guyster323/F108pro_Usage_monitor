@@ -59,6 +59,14 @@ class _ScanStats:
     observation_start: datetime | None = None
     observation_end: datetime | None = None
     limitations: list[str] = field(default_factory=list)
+    reason_buckets: dict[str, int] = field(default_factory=dict)
+
+    def note_reason(self, bucket: str, *, malformed: bool = False) -> None:
+        """Count a sanitized schema/reason bucket. Never stores record bodies."""
+        name = str(bucket or "unknown").strip() or "unknown"
+        self.reason_buckets[name] = self.reason_buckets.get(name, 0) + 1
+        if malformed:
+            self.malformed_usage_events += 1
 
     def note_limit(self, detail: str, *, stop_reading: bool = False) -> None:
         self.scan_truncated = True
@@ -114,6 +122,7 @@ class _ScanStats:
             observation_start=self.observation_start,
             observation_end=self.observation_end,
             limitations=tuple(dict.fromkeys(limitations)),
+            reason_buckets=tuple(sorted(self.reason_buckets.items())),
         )
 
 
@@ -301,7 +310,7 @@ def _records(path: Path, stats: _ScanStats) -> Iterator[dict[str, Any]]:
                             stats.note_limit("total-byte", stop_reading=True)
                             return
                         stats.bytes_read += len(raw)
-                    stats.malformed_usage_events += 1
+                    stats.note_reason("unreadable_line", malformed=True)
                     continue
                 if not raw.strip():
                     continue
@@ -317,12 +326,12 @@ def _records(path: Path, stats: _ScanStats) -> Iterator[dict[str, Any]]:
                     RecursionError,
                     ValueError,
                 ):
-                    stats.malformed_usage_events += 1
+                    stats.note_reason("unreadable_line", malformed=True)
                     continue
                 if isinstance(value, dict):
                     yield value
                 else:
-                    stats.malformed_usage_events += 1
+                    stats.note_reason("unreadable_line", malformed=True)
     except OSError:
         stats.read_errors += 1
 
@@ -536,6 +545,7 @@ def scan_codex_usage(
         if stats.reading_stopped:
             break
         session_id = path.stem
+        stream_key: str | None = None
         current_model = "unknown"
         previous_total: TokenUsage | None = None
         pre_cumulative_usage = TokenUsage()
@@ -551,7 +561,7 @@ def scan_codex_usage(
                 if normalized is not None:
                     session_id = normalized
                 elif value is not None:
-                    stats.malformed_usage_events += 1
+                    stats.note_reason("invalid_identifier", malformed=True)
                 continue
             if record_type == "turn_context":
                 candidate = _first(payload, "model", "model_name", "modelName")
@@ -584,18 +594,28 @@ def scan_codex_usage(
                 total_raw = _mapping(
                     _first(payload, "thread_token_usage", "threadTokenUsage")
                 )
-                last_raw = _mapping(_first(payload, "usage"))
-                if total_raw is None or last_raw is None:
-                    # An available cumulative counter still yields a
-                    # conservative subtotal; last-only official records are
-                    # skipped below because overlap cannot be ruled out.
-                    stats.malformed_usage_events += 1
+                last_raw = _mapping(_first(payload, "usage")) or _mapping(
+                    _first(payload, "turn_token_usage", "turnTokenUsage")
+                )
+                thread_value = _first(payload, "thread_id", "threadId")
+                thread_normalized = _identifier(thread_value, max_length=200)
+                if thread_normalized is not None:
+                    if stream_key is None:
+                        stream_key = thread_normalized
+                elif thread_value is not None:
+                    stats.note_reason("invalid_identifier", malformed=True)
                 value = _first(payload, "session_id", "sessionId")
                 normalized = _identifier(value, max_length=200)
                 if normalized is not None:
-                    session_id = normalized
+                    # Official token_usage_record.session_id can be a parent
+                    # conversation shared by sibling threads. Grouping on it
+                    # collapses distinct thread files and false-flags them as
+                    # incompatible copies. Keep the session_meta identity when
+                    # a thread_id is available.
+                    if thread_normalized is None:
+                        session_id = normalized
                 elif value is not None:
-                    stats.malformed_usage_events += 1
+                    stats.note_reason("invalid_identifier", malformed=True)
             else:
                 info = _mapping(payload.get("info")) or _mapping(record.get("info"))
                 if info is None:
@@ -616,7 +636,7 @@ def scan_codex_usage(
                 or _first(payload, "timestamp", "created_at", "createdAt")
             )
             if moment is None:
-                stats.malformed_usage_events += 1
+                stats.note_reason("missing_timestamp", malformed=True)
                 continue
             model = _model_name(
                 _first(info, "model", "model_name", "modelName")
@@ -628,7 +648,7 @@ def scan_codex_usage(
             if total_raw is not None:
                 current_total = _codex_tokens(total_raw)
                 if current_total is None:
-                    stats.malformed_usage_events += 1
+                    stats.note_reason("unreadable_token_container", malformed=True)
                     continue
                 if previous_total is None:
                     if pre_cumulative_usage.is_zero:
@@ -640,7 +660,7 @@ def scan_codex_usage(
                             # this first cumulative value. Keep the already
                             # observed subtotal and start the cumulative cursor
                             # here without counting an ambiguous overlap.
-                            stats.malformed_usage_events += 1
+                            stats.note_reason("ambiguous_counter_overlap", malformed=True)
                             increment = TokenUsage()
                 else:
                     increment = current_total.delta_from(previous_total)
@@ -657,11 +677,13 @@ def scan_codex_usage(
                     # mirror a response already represented by the established
                     # cumulative stream, so neither is safe to add here.
                     if previous_total is not None and not token_usage_record:
-                        stats.malformed_usage_events += 1
+                        stats.note_reason(
+                            "legacy_last_only_after_cumulative", malformed=True
+                        )
                     continue
                 increment = _codex_tokens(last_raw)
                 if increment is None:
-                    stats.malformed_usage_events += 1
+                    stats.note_reason("unreadable_token_container", malformed=True)
                     continue
                 tokens_for_identity = increment
             if increment.is_zero:
@@ -678,9 +700,9 @@ def scan_codex_usage(
             ) or _first(record, "id", "event_id", "eventId", "uuid")
             explicit_id = _identifier(raw_explicit_id)
             if raw_explicit_id is not None and explicit_id is None:
-                stats.malformed_usage_events += 1
+                stats.note_reason("invalid_identifier", malformed=True)
             if token_usage_record and explicit_id is None:
-                stats.malformed_usage_events += 1
+                stats.note_reason("invalid_identifier", malformed=True)
             if explicit_id is not None:
                 # Response/event IDs are the strongest cross-file identity;
                 # model/session metadata is checked below instead of weakening
@@ -715,7 +737,7 @@ def scan_codex_usage(
                     # for the same cumulative snapshot. Never retain both.
                     # The smaller increment is the conservative reconciliation,
                     # while partial coverage prevents cost/ratio certification.
-                    stats.malformed_usage_events += 1
+                    stats.note_reason("incompatible_duplicate", malformed=True)
                     if (
                         observation.tokens.total_tokens
                         < previous.tokens.total_tokens
@@ -724,6 +746,8 @@ def scan_codex_usage(
                 continue
             file_observations[event_id] = observation
             file_event_order.append(event_id)
+            if token_usage_record:
+                stats.note_reason("token_usage_record_supported")
             if total_raw is None:
                 pre_cumulative_usage = pre_cumulative_usage + increment
         if file_event_order:
@@ -735,7 +759,7 @@ def scan_codex_usage(
                 ),
                 terminal=previous_total or pre_cumulative_usage,
             )
-            streams_by_session.setdefault(session_id, []).append(stream)
+            streams_by_session.setdefault(stream_key or session_id, []).append(stream)
 
     # Count repeated candidate events independently from stream selection. A
     # repeated event can prove a full prefix, but one shared snapshot alone is
@@ -757,7 +781,7 @@ def scan_codex_usage(
                 continue
             if _codex_streams_are_prefix_compatible(stream, selected):
                 continue
-            stats.malformed_usage_events += 1
+            stats.note_reason("incompatible_session_streams", malformed=True)
             message = (
                 "Multiple files share a Codex session ID without a provable "
                 "complete-prefix relationship; only the stream with the "
@@ -778,7 +802,7 @@ def scan_codex_usage(
                 observations[observation.event_id] = observation
                 continue
             if previous != observation:
-                stats.malformed_usage_events += 1
+                stats.note_reason("incompatible_duplicate", malformed=True)
                 if observation.tokens.total_tokens < previous.tokens.total_tokens:
                     observations[observation.event_id] = observation
     ordered = tuple(
@@ -892,16 +916,16 @@ def scan_claude_usage(
             if record.get("type") != "assistant":
                 continue
             if message is None:
-                stats.malformed_usage_events += 1
+                stats.note_reason("unreadable_token_container", malformed=True)
                 continue
             if "usage" not in message:
                 stats.usage_events_seen += 1
-                stats.malformed_usage_events += 1
+                stats.note_reason("unreadable_token_container", malformed=True)
                 continue
             usage_raw = _mapping(message.get("usage"))
             if usage_raw is None:
                 stats.usage_events_seen += 1
-                stats.malformed_usage_events += 1
+                stats.note_reason("unreadable_token_container", malformed=True)
                 continue
             stats.usage_events_seen += 1
             tokens = _claude_tokens(usage_raw)
@@ -910,13 +934,18 @@ def scan_claude_usage(
                 or _first(message, "timestamp", "created_at", "createdAt")
             )
             if tokens is None or moment is None:
-                stats.malformed_usage_events += 1
+                stats.note_reason(
+                    "unreadable_token_container"
+                    if tokens is None
+                    else "missing_timestamp",
+                    malformed=True,
+                )
                 continue
             session_value = _first(record, "sessionId", "session_id", "session")
             normalized_session = _identifier(session_value, max_length=200)
             session_id = normalized_session or fallback_session
             if session_value is not None and normalized_session is None:
-                stats.malformed_usage_events += 1
+                stats.note_reason("invalid_identifier", malformed=True)
             model = _model_name(_first(message, "model", "model_name", "modelName"))
             raw_message_id = _first(message, "id", "message_id", "messageId")
             raw_outer_id = _first(record, "uuid", "id")
@@ -934,7 +963,7 @@ def scan_claude_usage(
                 and raw_request_id is not None
                 and request_id is None
             ):
-                stats.malformed_usage_events += 1
+                stats.note_reason("invalid_identifier", malformed=True)
             identity = (
                 ("message", message_id)
                 if message_id is not None
@@ -988,7 +1017,7 @@ def scan_claude_usage(
                     )
                 )
                 if previous.model != observation.model or not comparable:
-                    stats.malformed_usage_events += 1
+                    stats.note_reason("incompatible_duplicate", malformed=True)
                 previous_score = (
                     previous.tokens.total_tokens,
                     previous.tokens.cache_write_5m_tokens

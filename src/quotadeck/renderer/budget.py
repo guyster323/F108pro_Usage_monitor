@@ -10,9 +10,12 @@ from quotadeck.devices.aula_f108.constants import (
     LCD_SOFT_CAP,
 )
 
+# Logical/GIF quantization only. Firmware playback uses 4 ms bytes; see
+# quotadeck.devices.aula_f108.constants.FIRMWARE_DELAY_TICK_MS.
 TICK_MS = 20
 DEFAULT_ACCOUNT_HOLD_MS = 5000
 DESIRED_FRAMES_PER_ACCOUNT = 8
+IDLE_PLACEHOLDER_MS = 2000
 
 
 class SceneBudgetError(ValueError):
@@ -36,6 +39,19 @@ def _distribute_ticks(total_ticks: int, frame_count: int) -> tuple[int, ...]:
         if extra:
             ticks[index] += 1
     return tuple(value * TICK_MS for value in ticks)
+
+
+def idle_placeholder_delays(total_ms: int = IDLE_PLACEHOLDER_MS) -> tuple[int, ...]:
+    """Split a Preview idle hold into exact, firmware-encodable frame delays."""
+    total_ticks = max(1, int(round(int(total_ms) / TICK_MS)))
+    hold_ms = total_ticks * TICK_MS
+    frame_count = max(1, ceil(hold_ms / LCD_MAX_DELAY_MS))
+    delays = _distribute_ticks(total_ticks, frame_count)
+    if any(delay > LCD_MAX_DELAY_MS for delay in delays):
+        raise SceneBudgetError(
+            f"idle placeholder delay exceeds the {LCD_MAX_DELAY_MS} ms firmware limit"
+        )
+    return delays
 
 
 def allocate(
@@ -69,7 +85,9 @@ def allocate(
     frames_per_account = max(minimum_frames, frames_per_account)
     delays = _distribute_ticks(total_ticks, frames_per_account)
     if any(delay > LCD_MAX_DELAY_MS for delay in delays):
-        raise SceneBudgetError("a generated frame delay exceeds the 5100 ms firmware limit")
+        raise SceneBudgetError(
+            f"a generated frame delay exceeds the {LCD_MAX_DELAY_MS} ms firmware limit"
+        )
     return SceneBudget(
         account_hold_ms=account_hold_ms,
         frames_per_account=frames_per_account,

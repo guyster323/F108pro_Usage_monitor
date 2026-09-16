@@ -209,6 +209,69 @@ def _aggregate_models(days: Iterable[DailyUsage]) -> tuple[ModelUsage, ...]:
     )
 
 
+_TOKEN_USAGE_FIELDS = (
+    "input_tokens",
+    "unclassified_input_tokens",
+    "output_tokens",
+    "cached_input_tokens",
+    "cache_write_tokens",
+    "cache_write_5m_tokens",
+    "cache_write_1h_tokens",
+    "reasoning_output_tokens",
+)
+
+
+def _scale_usage(
+    usage: TokenUsage,
+    *,
+    calendar_days: int,
+    observed_days: int,
+) -> TokenUsage:
+    """Prorate a partial calendar month with integer half-up rounding."""
+
+    if calendar_days < 1 or observed_days < 1:
+        raise ValueError("calendar and observed days must be positive")
+
+    def scale(value: int) -> int:
+        quotient, remainder = divmod(value * calendar_days, observed_days)
+        return quotient + int(remainder * 2 >= observed_days)
+
+    return TokenUsage(
+        **{name: scale(getattr(usage, name)) for name in _TOKEN_USAGE_FIELDS}
+    )
+
+
+def _estimate_partial_month(
+    days: Iterable[DailyUsage],
+    *,
+    month_start: date,
+    observed_start: date,
+    month_end: date,
+) -> DailyUsage:
+    """Return one full-month estimate from the retained partial month."""
+
+    models = _aggregate_models(days)
+    observed_days = (month_end - observed_start).days
+    calendar_days = (month_end - month_start).days
+    estimated_models = tuple(
+        ModelUsage(
+            item.provider,
+            item.model,
+            _scale_usage(
+                item.tokens,
+                calendar_days=calendar_days,
+                observed_days=observed_days,
+            ),
+        )
+        for item in models
+    )
+    return DailyUsage(
+        month_start,
+        TokenUsage.sum(item.tokens for item in estimated_models),
+        estimated_models,
+    )
+
+
 def _make_period_comparison(
     *,
     period: UsagePeriod,
@@ -219,6 +282,7 @@ def _make_period_comparison(
     history_periods: int,
     minimum_history_periods: int,
     current_complete: bool = True,
+    history_estimated: bool = False,
 ) -> PeriodUsageComparison:
     current_rows = tuple(current_days)
     history_rows = tuple(history_days)
@@ -246,6 +310,7 @@ def _make_period_comparison(
         ratio=ratio,
         intensity=intensity,
         current_complete=current_complete,
+        history_estimated=history_estimated,
     )
 
 
@@ -357,9 +422,15 @@ def build_usage_report(
     )
 
     current_month_start = end_day.replace(day=1)
-    first_complete_month = effective_start.replace(day=1)
-    if effective_start > first_complete_month:
-        first_complete_month = _next_month_start(first_complete_month)
+    first_observed_month = effective_start.replace(day=1)
+    partial_month_end = _next_month_start(first_observed_month)
+    has_partial_history_month = (
+        effective_start > first_observed_month
+        and first_observed_month < current_month_start
+    )
+    first_complete_month = (
+        partial_month_end if has_partial_history_month else first_observed_month
+    )
     complete_month_starts: list[date] = []
     month = first_complete_month
     while month < current_month_start:
@@ -375,6 +446,19 @@ def build_usage_report(
         for item in daily
         if monthly_history_start <= item.day < current_month_start
     )
+    if has_partial_history_month:
+        partial_days = tuple(
+            item
+            for item in daily
+            if effective_start <= item.day < partial_month_end
+        )
+        estimated_first_month = _estimate_partial_month(
+            partial_days,
+            month_start=first_observed_month,
+            observed_start=effective_start,
+            month_end=partial_month_end,
+        )
+        monthly_history = (estimated_first_month, *monthly_history)
     current_month = tuple(
         item for item in daily if current_month_start <= item.day <= end_day
     )
@@ -384,9 +468,10 @@ def build_usage_report(
         current_end=end_day,
         current_days=current_month,
         history_days=monthly_history,
-        history_periods=len(complete_month_starts),
+        history_periods=len(complete_month_starts) + int(has_partial_history_month),
         minimum_history_periods=minimum_history_months,
         current_complete=effective_start <= current_month_start,
+        history_estimated=has_partial_history_month,
     )
     model_totals = tuple(
         ModelUsage(provider, model, tokens)

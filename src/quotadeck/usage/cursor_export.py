@@ -377,14 +377,11 @@ def parse_cursor_csv_result(
     bind_generic_account: str | None = None,
 ) -> CursorCsvResult:
     filename_account = account_from_cursor_filename(path)
-    if (
-        filename_account is None
-        and path.name.casefold() == "usage.csv"
-        and bind_generic_cursor_usage_csv(
-            requested_account=account,
-            bound_account=bind_generic_account,
-        )
+    if filename_account is None and bind_generic_cursor_usage_csv(
+        requested_account=account,
+        bound_account=bind_generic_account,
     ):
+        # GUI import and an explicit single-account bind may use any filename.
         filename_account = account.strip()
     try:
         size = path.stat().st_size
@@ -658,6 +655,58 @@ def maybe_sync_cursor_cache(
         _touch_sync_marker(root, now=now)
 
 
+def collect_cursor_usage(
+    *,
+    account: str,
+    settings: CollectorSettings | None = None,
+    payload: object | None = None,
+    runner=None,
+    clock: _Clock | None = None,
+    cache_dirs: Sequence[Path] | None = None,
+    email: str | None = None,
+    user_id: str | None = None,
+    store=None,
+    admin_root: Path | None = None,
+    poster=None,
+    force_admin: bool = False,
+) -> CollectorAttempt:
+    """Resolve one Cursor source: Admin API, then GUI CSV, then advanced collectors."""
+
+    cfg = settings or CollectorSettings.from_env()
+    if payload is not None:
+        return parse_cursor_payload(payload, account=account, max_records=cfg.max_records)
+    if cfg.admin_enabled_for(account):
+        from quotadeck.usage.cursor_admin import collect_cursor_admin
+
+        return collect_cursor_admin(
+            account=account,
+            email=email,
+            user_id=user_id,
+            settings=cfg,
+            store=store,
+            root=admin_root,
+            poster=poster,
+            clock=clock,
+            force=force_admin,
+        )
+    gui = cfg.gui_csv_for(account)
+    if gui is not None:
+        return parse_cursor_csv(
+            gui,
+            account=account,
+            max_records=cfg.max_records,
+            max_bytes=cfg.max_json_bytes,
+            bind_generic_account=account,
+        )
+    return collect_cursor_export(
+        account=account,
+        settings=cfg,
+        runner=runner,
+        clock=clock,
+        cache_dirs=cache_dirs,
+    )
+
+
 def collect_cursor_export(
     *,
     account: str,
@@ -735,6 +784,7 @@ __all__ = [
     "account_from_cursor_filename",
     "bind_generic_cursor_usage_csv",
     "collect_cursor_export",
+    "collect_cursor_usage",
     "cursor_cache_is_fresh",
     "default_cursor_cache_dirs",
     "discover_cursor_export_files",

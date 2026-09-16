@@ -45,6 +45,43 @@ def test_mask_text_covers_persistent_log_secrets(monkeypatch) -> None:
     assert "%USERPROFILE%" in masked
 
 
+def test_snapshot_errors_are_written_to_diagnostics(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+
+    from quotadeck.core.models import UsageSnapshot
+    from quotadeck.diagnostics import log_snapshot_errors
+
+    session = configure_diagnostics(
+        "test-snap",
+        log_dir=tmp_path,
+        install_hooks=False,
+        enable_faults=False,
+        check_previous=False,
+    )
+    try:
+        log_snapshot_errors(
+            [
+                UsageSnapshot(
+                    "cursor",
+                    "one",
+                    "ONE",
+                    "pro",
+                    [],
+                    "error",
+                    datetime.now(timezone.utc),
+                    error="CERTIFICATE_VERIFY_FAILED token=sk-private-secret-value",
+                )
+            ]
+        )
+        session.flush()
+        text = _combined_logs(tmp_path)
+        assert "event=snapshot_error" in text
+        assert "CERTIFICATE_VERIFY_FAILED" in text
+        assert "sk-private-secret-value" not in text
+    finally:
+        session.close()
+
+
 def test_diagnostics_rotate_redact_and_close(tmp_path: Path) -> None:
     session = configure_diagnostics(
         "test",

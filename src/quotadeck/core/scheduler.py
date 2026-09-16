@@ -30,6 +30,7 @@ from quotadeck.core.models import (
     normalize_remaining,
 )
 from quotadeck.core.severity import RESET_HOLD, detect_reset, snapshot_severity
+from quotadeck.devices.aula_f108.constants import LCD_DEFAULT_BUDGET
 from quotadeck.devices.aula_f108.device import F108Device
 from quotadeck.devices.aula_f108.payload import Frame
 from quotadeck.discovery.accounts import select_accounts
@@ -48,8 +49,11 @@ from quotadeck.renderer.scenes import (
     render_playlist,
 )
 from quotadeck.renderer.sprites import load_theme
+from quotadeck.diagnostics import log_snapshot_errors
 from quotadeck.usage.display import CumulativeSnapshot
+from quotadeck.usage.fx import FxFetchError, FxRateQuote, default_fx_cache_path, resolve_usd_krw_rate
 from quotadeck.usage.models import CostCurrency
+from quotadeck.usage.collectors import CollectorSettings
 from quotadeck.usage.service import CumulativeUsageService
 log = logging.getLogger("quotadeck")
 
@@ -82,7 +86,7 @@ def render_hash(
     theme: str,
     mode: str,
     hold_seconds: int = 5,
-    frame_budget: int = 32,
+    frame_budget: int = LCD_DEFAULT_BUDGET,
 ) -> str:
     rows = []
     for snap in snapshots:
@@ -134,7 +138,7 @@ def cumulative_render_hash(
     theme: str,
     mode: str,
     hold_seconds: int = 5,
-    frame_budget: int = 32,
+    frame_budget: int = LCD_DEFAULT_BUDGET,
     currency: CostCurrency = CostCurrency.USD,
     usd_to_krw_rate: Decimal | int | float | str = 1400,
 ) -> str:
@@ -203,6 +207,9 @@ class SchedulerState:
     last_hash: str | None = None
     last_frames: list[Frame] = field(default_factory=list)
     last_polled: list[DisplaySnapshot] = field(default_factory=list)
+    last_quota: dict[str, UsageSnapshot] = field(default_factory=dict)
+    last_cumulative: dict[tuple[str, str], CumulativeSnapshot] = field(default_factory=dict)
+    fx_quote: FxRateQuote | None = None
 
 class QuotaDeckRuntime:
     def __init__(
@@ -232,6 +239,97 @@ class QuotaDeckRuntime:
         self.cumulative = CumulativeUsageService(
             cache_seconds=max(15, min(60, self.config.poll_seconds)),
         )
+        self.cumulative.loader.collector = CollectorSettings.from_config(self.config)
+
+    def adopt_display_state(self, previous: SchedulerState | None) -> None:
+        """Keep per-mode snapshot and FX caches across Apply replacements."""
+
+        if previous is None:
+            return
+        self.state.previous = dict(previous.previous)
+        self.state.severity = dict(previous.severity)
+        self.state.reset_until = dict(previous.reset_until)
+        self.state.last_quota = dict(previous.last_quota)
+        self.state.last_cumulative = dict(previous.last_cumulative)
+        self.state.fx_quote = previous.fx_quote
+        if previous.fx_quote is not None:
+            self.cumulative.fx = previous.fx_quote
+        self.state.last_polled = self.cached_snapshots()
+
+    def cached_snapshots(
+        self,
+        *,
+        keys: list[str] | None = None,
+        metric: MetricMode | None = None,
+        period: object | None = None,
+    ) -> list[DisplaySnapshot]:
+        selected_keys = keys or [
+            f"{item.provider}:{item.account_id}" for item in self.config.accounts
+        ]
+        selected_metric = metric or self.config.metric_mode
+        if selected_metric is MetricMode.CUMULATIVE:
+            selected_period = getattr(period, "value", period)
+            if not selected_period:
+                selected_period = self.config.cumulative_period.value
+            return [
+                snapshot
+                for key in selected_keys
+                if (
+                    snapshot := self.state.last_cumulative.get(
+                        (key, str(selected_period))
+                    )
+                )
+                is not None
+            ]
+        return [
+            snapshot
+            for key in selected_keys
+            if (snapshot := self.state.last_quota.get(key)) is not None
+        ]
+
+    def remember_snapshots(self, snapshots: list[DisplaySnapshot]) -> None:
+        for snapshot in snapshots:
+            if isinstance(snapshot, CumulativeSnapshot):
+                self.state.last_cumulative[(snapshot.key, snapshot.period.value)] = snapshot
+            elif isinstance(snapshot, UsageSnapshot):
+                self.state.last_quota[snapshot.key] = snapshot
+        self.state.last_polled = list(snapshots)
+        log_snapshot_errors(snapshots, log)
+
+    def effective_usd_to_krw_rate(self) -> float:
+        quote = self.state.fx_quote
+        if quote is not None and quote.usd_to_krw is not None:
+            return float(quote.usd_to_krw)
+        return float(self.config.usd_to_krw_rate)
+
+    def refresh_fx(self) -> FxRateQuote | None:
+        """Resolve FX on a worker thread: live → cache → manual when Auto."""
+
+        def _disabled(*_args: object, **_kwargs: object) -> bytes:
+            raise FxFetchError("live_disabled")
+
+        try:
+            quote = resolve_usd_krw_rate(
+                fetcher=None if self.config.fx_auto else _disabled,
+                cache_path=default_fx_cache_path() if self.config.fx_auto else None,
+                manual_rate=Decimal(str(self.config.usd_to_krw_rate)),
+            )
+        except Exception:
+            log.exception("event=fx_resolve_failed")
+            return self.state.fx_quote
+        self.state.fx_quote = quote
+        self.cumulative.fx = quote
+        log.info(
+            "event=fx_resolved auto=%s fallback=%s source=%s as_of=%s rate=%s reason=%s",
+            self.config.fx_auto,
+            None if quote.fallback is None else quote.fallback.value,
+            quote.source,
+            quote.as_of,
+            quote.usd_to_krw,
+            quote.reason,
+        )
+        return quote
+
     def selected_accounts(self) -> list[AccountRef]:
         started = time.monotonic()
         log.info("event=account_selection_start providers=%d", len(self.providers))
@@ -257,6 +355,11 @@ class QuotaDeckRuntime:
     def poll(self) -> list[DisplaySnapshot]:
         started = time.monotonic()
         log.info("event=provider_poll_start")
+        if (
+            self.config.metric_mode is MetricMode.CUMULATIVE
+            and self.config.cost_currency is CostCurrency.KRW
+        ):
+            self.refresh_fx()
         if self.config.metric_mode is MetricMode.CUMULATIVE:
             snapshots = self.cumulative.snapshots(
                 self.selected_accounts(),
@@ -265,7 +368,7 @@ class QuotaDeckRuntime:
             for snap in snapshots:
                 self.state.severity[snap.key] = snap.severity
             self._retain_active_accounts({snap.key for snap in snapshots})
-            self.state.last_polled = list(snapshots)
+            self.remember_snapshots(list(snapshots))
             log.info(
                 "event=provider_poll_complete accounts=%d duration_ms=%d metric=cumulative",
                 len(snapshots),
@@ -316,7 +419,7 @@ class QuotaDeckRuntime:
             self.state.previous[snap.key] = snap
             snapshots.append(snap)
         self._retain_active_accounts({snap.key for snap in snapshots})
-        self.state.last_polled = list(snapshots)
+        self.remember_snapshots(list(snapshots))
         log.info(
             "event=provider_poll_complete accounts=%d duration_ms=%d",
             len(snapshots),
@@ -362,7 +465,7 @@ class QuotaDeckRuntime:
                 frame_budget=self.config.frame_budget,
                 hold_ms=self.config.scene_hold_seconds * 1000,
                 currency=self.config.cost_currency,
-                usd_to_krw_rate=self.config.usd_to_krw_rate,
+                usd_to_krw_rate=self.effective_usd_to_krw_rate(),
             )
         else:
             frames = render_playlist(
@@ -389,7 +492,7 @@ class QuotaDeckRuntime:
                 hold_seconds=self.config.scene_hold_seconds,
                 frame_budget=self.config.frame_budget,
                 currency=self.config.cost_currency,
-                usd_to_krw_rate=self.config.usd_to_krw_rate,
+                usd_to_krw_rate=self.effective_usd_to_krw_rate(),
             )
         else:
             digest = render_hash(

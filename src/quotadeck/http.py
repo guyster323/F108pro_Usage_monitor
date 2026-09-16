@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import httpx
 
+from quotadeck.tls import tls_verify
+
 
 def _client() -> httpx.Client:
-    # Keep certificate verification mandatory for every authenticated request.
-    # httpx still honours the platform trust configuration and SSL_CERT_FILE.
-    return httpx.Client(timeout=20.0, verify=True, follow_redirects=True)
+    # Certificate verification is mandatory. tls_verify() adds the OS trust
+    # store and an optional QUOTADECK_CA_BUNDLE / SSL_CERT_FILE PEM path.
+    return httpx.Client(timeout=20.0, verify=tls_verify(), follow_redirects=True)
 
 def request(method: str, url: str, **kwargs) -> httpx.Response:
     """Send an HTTPS request while failing closed on TLS verification errors."""

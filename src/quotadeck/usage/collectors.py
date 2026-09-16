@@ -62,6 +62,7 @@ class CollectorName(str, Enum):
     NATIVE = "native"
     IMPORT = "import"
     CURSOR_EXPORT = "cursor-export"
+    CURSOR_ADMIN = "cursor-admin"
 
 
 class CollectorStatus(str, Enum):
@@ -87,6 +88,8 @@ class CollectorSettings:
     import_path: Path | None = None
     cursor_export_path: Path | None = None
     cursor_usage_csv_account: str | None = None
+    cursor_gui_exports: tuple[tuple[str, str], ...] = ()
+    cursor_admin_accounts: tuple[str, ...] = ()
     enable_token_stats: bool = False
     enable_ccusage: bool = False
     enable_cursor_sync: bool = False
@@ -126,6 +129,58 @@ class CollectorSettings:
             ),
         )
 
+    @classmethod
+    def from_config(cls, config: object | None = None) -> CollectorSettings:
+        """Layer GUI/Admin bindings on top of optional environment collectors."""
+
+        base = cls.from_env()
+        if config is None:
+            return base
+        exports: list[tuple[str, str]] = []
+        admin_accounts: list[str] = []
+        for item in getattr(config, "cursor_bindings", ()) or ():
+            account = str(getattr(item, "account_id", "") or "").strip()
+            if not account:
+                continue
+            csv_path = str(getattr(item, "csv_path", "") or "").strip()
+            if csv_path:
+                exports.append((account, csv_path))
+            source = str(getattr(item, "source", "") or "").strip()
+            if source == "admin_api":
+                admin_accounts.append(account)
+        return replace(
+            base,
+            cursor_gui_exports=tuple(exports),
+            cursor_admin_accounts=tuple(admin_accounts),
+        )
+
+    def gui_csv_for(self, account: str) -> Path | None:
+        wanted = account.strip().casefold()
+        if not wanted:
+            return None
+        for bound_account, raw in self.cursor_gui_exports:
+            if bound_account.casefold() != wanted:
+                continue
+            path = Path(raw).expanduser()
+            return path if path.is_file() else None
+        return None
+
+    def admin_enabled_for(self, account: str) -> bool:
+        wanted = account.strip().casefold()
+        return bool(wanted) and any(
+            item.casefold() == wanted for item in self.cursor_admin_accounts
+        )
+
+    def cache_fingerprint(self) -> str:
+        return "|".join(
+            (
+                ",".join(f"{account}={path}" for account, path in self.cursor_gui_exports),
+                ",".join(self.cursor_admin_accounts),
+                str(self.cursor_export_path or ""),
+                str(self.cursor_usage_csv_account or ""),
+            )
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class CollectorAttempt:
@@ -134,6 +189,8 @@ class CollectorAttempt:
     dataset: UsageDataset | None = None
     reason: str | None = None
     truncated: bool = False
+    stale: bool = False
+    live_validated: bool = False
 
     @property
     def usable(self) -> bool:
@@ -231,6 +288,8 @@ def parse_timestamp(value: object, *, zone: tzinfo | None = None) -> datetime | 
     if not isinstance(value, str) or not value.strip():
         return None
     text = value.strip()
+    if text.isdigit():
+        return parse_timestamp(int(text), zone=zone)
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"
     try:

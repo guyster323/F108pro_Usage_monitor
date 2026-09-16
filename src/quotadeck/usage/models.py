@@ -25,6 +25,7 @@ class UsageSourceKind(str, Enum):
     TOKEN_STATS = "token_stats"
     CCUSAGE = "ccusage"
     CURSOR_EXPORT = "cursor_export"
+    CURSOR_ADMIN = "cursor_admin"
 
 
 class UsagePeriod(str, Enum):
@@ -310,6 +311,7 @@ class UsageCoverage:
     observation_start: datetime | None = None
     observation_end: datetime | None = None
     limitations: tuple[str, ...] = field(default_factory=tuple)
+    reason_buckets: tuple[tuple[str, int], ...] = ()
 
     @property
     def observed_calendar_days(self) -> int:
@@ -391,6 +393,7 @@ class PeriodUsageComparison:
     ratio: float | None
     intensity: UsageIntensity
     current_complete: bool = True
+    history_estimated: bool = False
 
     def __post_init__(self) -> None:
         if self.current_end < self.current_start:

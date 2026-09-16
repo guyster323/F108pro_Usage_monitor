@@ -7,7 +7,12 @@ from quotadeck.core.models import DisplayMode, Severity, UsageSnapshot, UsageWin
 from quotadeck.core.scheduler import render_hash
 from quotadeck.core.severity import snapshot_severity
 from quotadeck.devices.aula_f108.constants import LCD_HEIGHT, LCD_WIDTH
-from quotadeck.devices.aula_f108.payload import Frame, PayloadError, delay_byte
+from quotadeck.devices.aula_f108.payload import (
+    Frame,
+    PayloadError,
+    firmware_duration_ms,
+    payload_duration_ms,
+)
 from quotadeck.gifio import load_gif
 from quotadeck.renderer.budget import SceneBudgetError, allocate
 from quotadeck.renderer.encode import write_gif
@@ -71,14 +76,22 @@ def test_gif_writer_rejects_off_tick_timing(tmp_path: Path) -> None:
     from PIL import Image
 
     invalid = Frame(Image.new("RGB", (LCD_WIDTH, LCD_HEIGHT)), delay_ms=30)
-    with pytest.raises(PayloadError, match="exact 20 ms tick"):
+    with pytest.raises(PayloadError, match="exact 20 ms logical/GIF tick"):
         write_gif([invalid], tmp_path / "invalid.gif")
 
 def test_budget_is_equal_for_many_accounts() -> None:
-    many = allocate(8, 32)
-    assert many.frames_per_account == 4
-    assert many.total_frames == 32
+    many = allocate(8, 40)
+    assert many.frames_per_account == 5
+    assert many.total_frames == 40
     assert sum(many.frame_delays_ms) == 5000
+    assert max(many.frame_delays_ms) <= 1020
+
+
+def test_eight_accounts_at_five_seconds_need_firmware_frame_floor() -> None:
+    import pytest
+
+    with pytest.raises(SceneBudgetError, match="at least"):
+        allocate(8, 32, hold_ms=5000)
 
 
 def test_static_character_states_use_a_brief_expression_pose() -> None:
@@ -276,13 +289,19 @@ def test_non_finite_window_does_not_crash_renderer() -> None:
     assert image.size == (LCD_WIDTH, LCD_HEIGHT)
 
 def test_empty_playlist_renders_idle_card() -> None:
+    from quotadeck.devices.aula_f108.payload import build_payload, payload_duration_ms
     from quotadeck.renderer.layout import paint_empty
     from quotadeck.renderer.scenes import render_playlist
     from quotadeck.renderer.sprites import load_theme
 
     frames = render_playlist([], {}, load_theme(THEME), frame_budget=8)
-    assert len(frames) == 1
-    assert frames[0].image.size == (LCD_WIDTH, LCD_HEIGHT)
+    assert len(frames) == 2
+    assert all(frame.image.size == (LCD_WIDTH, LCD_HEIGHT) for frame in frames)
+    assert all(frame.delay_ms <= 1020 for frame in frames)
+    preview_ms = sum(frame.delay_ms for frame in frames)
+    assert preview_ms == 2000
+    payload = build_payload(frames)
+    assert payload_duration_ms(payload) == preview_ms
     empty = paint_empty()
     assert empty.size == (LCD_WIDTH, LCD_HEIGHT)
 
@@ -301,18 +320,37 @@ def test_scene_hold_splits_long_delay() -> None:
     sevs = {s.key: snapshot_severity(s) for s in snaps}
     frames = render_playlist(snaps, sevs, load_theme(THEME), frame_budget=16, hold_ms=8000)
     holds = [frame.delay_ms for frame in frames]
-    assert sum(delay_byte(value) * 20 for value in holds) == 8000
-    assert max(holds) <= 5100
+    assert sum(firmware_duration_ms(value) for value in holds) == 8000
+    assert sum(holds) == 8000
+    assert max(holds) <= 1020
 
 
 def test_scene_hold_uses_two_frames_at_exact_delay_limit() -> None:
-    budget = allocate(1, 2, hold_ms=10200)
-    assert budget.frame_delays_ms == (5100, 5100)
+    budget = allocate(1, 2, hold_ms=2040)
+    assert budget.frame_delays_ms == (1020, 1020)
 
 def test_allocate_uses_requested_hold() -> None:
     budget = allocate(2, 32, hold_ms=7000)
     assert budget.account_hold_ms == 7000
     assert sum(budget.frame_delays_ms) == 7000
+
+
+def test_serial_payload_and_preview_duration_is_account_count_times_hold() -> None:
+    from quotadeck.devices.aula_f108.payload import build_payload
+
+    snaps = _snapshots()[:3]
+    sevs = {s.key: snapshot_severity(s) for s in snaps}
+    frames = render_playlist(snaps, sevs, load_theme(THEME), frame_budget=32, hold_ms=5000)
+    budget = allocate(len(snaps), 32, hold_ms=5000)
+    assert budget.account_hold_ms == 5000
+    payload = build_payload(frames)
+    frame_count = payload[0]
+    payload_ms = payload_duration_ms(payload)
+    rendered_ms = sum(firmware_duration_ms(frame.delay_ms) for frame in frames)
+    assert sum(frame.delay_ms for frame in frames) == 5000 * len(snaps)
+    assert rendered_ms == 5000 * len(snaps)
+    assert payload_ms == rendered_ms
+    assert payload_ms == budget.account_hold_ms * len(snaps)
 
 
 def test_every_account_gets_exactly_five_seconds() -> None:
@@ -324,7 +362,56 @@ def test_every_account_gets_exactly_five_seconds() -> None:
     for index in range(len(snaps)):
         start = index * budget.frames_per_account
         account_frames = frames[start : start + budget.frames_per_account]
-        assert sum(delay_byte(frame.delay_ms) * 20 for frame in account_frames) == 5000
+        assert sum(frame.delay_ms for frame in account_frames) == 5000
+        assert sum(firmware_duration_ms(frame.delay_ms) for frame in account_frames) == 5000
+
+
+def _eight_snapshots() -> list[UsageSnapshot]:
+    from dataclasses import replace
+
+    base = _snapshots()
+    return [
+        replace(base[index % len(base)], account_id=f"{base[index % len(base)].account_id}-{index}")
+        for index in range(8)
+    ]
+
+
+def test_default_budget_encodes_eight_five_second_accounts() -> None:
+    import pytest
+    from quotadeck.devices.aula_f108.constants import LCD_DEFAULT_BUDGET, LCD_SOFT_CAP
+    from quotadeck.devices.aula_f108.payload import build_payload
+
+    snaps = _eight_snapshots()
+    sevs = {item.key: snapshot_severity(item) for item in snaps}
+    with pytest.raises(SceneBudgetError, match="at least 40 frames"):
+        allocate(8, 32, hold_ms=5000)
+    with pytest.raises(SceneBudgetError, match="at least 50 frames"):
+        allocate(10, hold_ms=5000)
+    budget = allocate(8, hold_ms=5000)
+    assert LCD_DEFAULT_BUDGET == LCD_SOFT_CAP == 48
+    assert budget.total_frames <= 48
+    frames = render_playlist(snaps, sevs, load_theme(THEME), hold_ms=5000)
+    payload = build_payload(frames)
+    assert payload[0] == len(frames) <= 141
+    assert sum(frame.delay_ms for frame in frames) == 40_000
+    assert payload_duration_ms(payload) == 40_000
+    assert max(frame.delay_ms for frame in frames) <= 1020
+
+
+def test_fixed_order_preserves_user_list_and_smart_sorts_urgency() -> None:
+    from quotadeck.core.models import DisplayMode, Severity
+    from quotadeck.renderer.scenes import _order
+
+    snaps = _snapshots()
+    sevs = {snap.key: Severity.HEALTHY for snap in snaps}
+    sevs[snaps[-1].key] = Severity.CRITICAL
+    sevs[snaps[0].key] = Severity.CAUTION
+    fixed = _order(snaps, sevs, DisplayMode.FIXED)
+    assert [item.key for item in fixed] == [item.key for item in snaps]
+    smart = _order(snaps, sevs, DisplayMode.SMART)
+    assert smart[0].key == snaps[-1].key
+    assert [item.key for item in smart if item.key != snaps[-1].key][0] == snaps[0].key
+    assert sorted(item.key for item in smart) == sorted(item.key for item in snaps)
 
 
 def test_smart_order_has_no_duplicate_accounts() -> None:

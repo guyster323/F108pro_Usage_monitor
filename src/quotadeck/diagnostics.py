@@ -541,6 +541,35 @@ def configure_diagnostics(
     return session
 
 
+def log_snapshot_errors(snapshots: object, logger: logging.Logger | None = None) -> None:
+    """Record each snapshot.error so TLS/login failures stay in diagnostics."""
+
+    log = logger or logging.getLogger("quotadeck")
+    session = current_session()
+    items = snapshots if isinstance(snapshots, (list, tuple)) else ()
+    for snap in items:
+        error = getattr(snap, "error", None)
+        if not error:
+            continue
+        provider = getattr(snap, "provider", "")
+        status = getattr(snap, "status", "")
+        masked = mask_text(str(error))
+        log.warning(
+            "event=snapshot_error provider=%s status=%s error=%s",
+            provider,
+            status,
+            masked,
+        )
+        if session is not None:
+            session.event(
+                "snapshot_error",
+                level=logging.WARNING,
+                provider=provider,
+                status=status,
+                error=masked,
+            )
+
+
 def current_session() -> DiagnosticSession | None:
     return _active_session
 

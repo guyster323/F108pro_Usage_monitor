@@ -106,7 +106,7 @@ class CumulativeSnapshot:
 
     @property
     def available(self) -> bool:
-        return self.status in {"ok", "partial"} and self.report is not None
+        return self.status in {"ok", "partial", "stale"} and self.report is not None
 
     @property
     def period_comparison(self) -> PeriodUsageComparison | None:
@@ -137,7 +137,7 @@ class CumulativeSnapshot:
 
     @property
     def average_tokens(self) -> int | None:
-        if not self.available or self.status != "ok":
+        if not self.available:
             return None
         selected = self.period_comparison
         if selected is not None:
@@ -175,7 +175,7 @@ class CumulativeSnapshot:
 
     @property
     def ratio(self) -> float | None:
-        if not self.available or self.status != "ok":
+        if not self.available:
             return None
         selected = self.period_comparison
         if selected is not None:
@@ -187,7 +187,7 @@ class CumulativeSnapshot:
 
     @property
     def intensity(self) -> UsageIntensity | None:
-        if not self.available or self.status != "ok":
+        if not self.available:
             return None
         selected = self.period_comparison
         if selected is not None:
@@ -208,29 +208,46 @@ class CumulativeSnapshot:
         assert self.intensity is not None
         return intensity_severity(self.intensity)
 
+    def _has_reliable_reaction(self) -> bool:
+        if self.intensity is None or self.intensity is UsageIntensity.INSUFFICIENT_HISTORY:
+            return False
+        ratio = self.ratio
+        return ratio is not None and ratio == ratio and ratio >= 0
+
     @property
     def sprite_state(self) -> str:
-        if self.status == "partial" or not self.available:
+        if self.status == "stale" or not self.available:
+            return "stale"
+        if self.status == "partial" and not self._has_reliable_reaction():
             return "stale"
         assert self.intensity is not None
         return intensity_sprite_state(self.intensity)
 
     @property
     def comparison_display(self) -> str:
-        if not self.available or self.status != "ok":
+        if not self.available:
             return "N/A"
         if self.intensity is UsageIntensity.INSUFFICIENT_HISTORY:
-            return "BUILD"
+            return "PARTIAL" if self.status == "partial" else "BUILD"
         ratio = self.ratio
         if ratio is None or ratio != ratio or ratio < 0:
-            return "BUILD"
+            return "PARTIAL" if self.status == "partial" else "BUILD"
         if not isfinite(ratio):
-            return "3X+"
-        if ratio >= 10:
-            return "9.9X+"
-        # Truncation avoids crossing a character-state boundary (1.46 -> 1.4).
-        shown = floor(ratio * 10) / 10
-        return f"{shown:.1f}X"
+            text = "3X+"
+        elif ratio >= 10:
+            text = "9.9X+"
+        elif 0 < ratio < 0.1:
+            text = "<0.1X"
+        else:
+            # Truncation avoids crossing a character-state boundary (1.46 -> 1.4).
+            shown = floor(ratio * 10) / 10
+            text = f"{shown:.1f}X"
+        selected = self.period_comparison
+        if self.status == "partial" or (
+            selected is not None and selected.history_estimated
+        ):
+            return f"{text} EST"
+        return text
 
     @property
     def top_model_usage(self) -> ModelUsage | None:
@@ -283,3 +300,12 @@ class CumulativeSnapshot:
             period=period,
             error=error,
         )
+
+
+def visible_on_cumulative_lcd(snapshot: CumulativeSnapshot) -> bool:
+    """Unconnected Cursor stays in settings but is omitted from LCD rotation."""
+
+    return not (
+        str(snapshot.provider).casefold() == "cursor"
+        and snapshot.status == "unsupported"
+    )

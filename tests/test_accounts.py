@@ -57,6 +57,8 @@ def test_config_defaults_are_sixty_five_ten() -> None:
     assert config.poll_seconds == 60
     assert config.scene_hold_seconds == 5
     assert config.min_upload_minutes == 10
+    assert config.fx_auto is True
+    assert config.frame_budget == 48
     assert _hold_seconds({}) == 5
     assert _hold_seconds({"scene_hold_seconds": 4}) == 4
     assert _hold_seconds({"scene_hold_seconds": 10}) == 10
@@ -71,7 +73,7 @@ def test_custom_hold_survives_save_load(tmp_path) -> None:
     save_config(AppConfig(scene_hold_seconds=7), path)
     loaded = load_config(path)
     assert loaded.scene_hold_seconds == 7
-    assert loaded.config_version == CONFIG_VERSION == 5
+    assert loaded.config_version == CONFIG_VERSION == 7
 
 
 def test_minimum_upload_interval_is_clamped_at_config_boundaries(tmp_path) -> None:
@@ -98,6 +100,70 @@ def test_save_always_stamps_current_config_version(tmp_path) -> None:
     save_config(AppConfig(scene_hold_seconds=10, config_version=1), path)
     raw = json.loads(path.read_text(encoding="utf-8"))
     assert raw["config_version"] == CONFIG_VERSION
+
+def test_cursor_bindings_migrate_from_older_configs(tmp_path) -> None:
+    import json
+
+    from quotadeck.config import (
+        CONFIG_VERSION,
+        AppConfig,
+        CursorUsageBinding,
+        load_config,
+        save_config,
+    )
+
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"config_version": 5, "accounts": []}), encoding="utf-8")
+    loaded = load_config(path)
+    assert loaded.cursor_bindings == []
+    assert loaded.config_version == CONFIG_VERSION == 7
+    save_config(
+        AppConfig(
+            cursor_bindings=[
+                CursorUsageBinding(
+                    account_id="work",
+                    source="csv",
+                    csv_path="C:/tmp/a.csv",
+                )
+            ]
+        ),
+        path,
+    )
+    again = load_config(path)
+    assert again.cursor_binding("work") is not None
+    assert again.active_cursor_source("work") == "csv"
+
+
+def test_legacy_hidden_frame_budget_migrates_to_soft_cap(tmp_path) -> None:
+    import json
+
+    from quotadeck.config import CONFIG_VERSION, AppConfig, load_config, save_config
+    from quotadeck.devices.aula_f108.constants import LCD_DEFAULT_BUDGET, LCD_SOFT_CAP
+
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"config_version": 6, "frame_budget": 32}),
+        encoding="utf-8",
+    )
+    loaded = load_config(path)
+    assert loaded.frame_budget == LCD_DEFAULT_BUDGET == LCD_SOFT_CAP == 48
+    assert loaded.config_version == CONFIG_VERSION == 7
+    save_config(loaded, path)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["frame_budget"] == 48
+    assert saved["config_version"] == 7
+    path.write_text(
+        json.dumps({"config_version": 6, "frame_budget": 16}),
+        encoding="utf-8",
+    )
+    assert load_config(path).frame_budget == 16
+    path.write_text(
+        json.dumps({"config_version": 7, "frame_budget": 200}),
+        encoding="utf-8",
+    )
+    assert load_config(path).frame_budget == 48
+    assert AppConfig(frame_budget=141).frame_budget == 48
+
 
 def test_config_ignores_unknown_keys() -> None:
     account = _account_from_dict(

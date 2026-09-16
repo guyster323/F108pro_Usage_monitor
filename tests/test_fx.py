@@ -260,7 +260,56 @@ def test_default_fetcher_requires_https_and_tls_verification(monkeypatch) -> Non
         timeout_seconds=5.0,
         max_bytes=1024,
     )
-    assert seen["verify"] is True
+    assert seen["verify"] is not False
+    if seen["verify"] is not True:
+        assert getattr(seen["verify"], "verify_mode") == __import__("ssl").CERT_REQUIRED
     assert seen["timeout"] == 5.0
     assert seen["method"] == "GET"
     assert b"krw" in raw
+
+
+def test_runtime_wires_automatic_fx_into_cumulative_service(tmp_path, monkeypatch) -> None:
+    from quotadeck.config import AppConfig
+    from quotadeck.core.models import MetricMode
+    from quotadeck.core.scheduler import QuotaDeckRuntime
+    from quotadeck.usage.fx import FxFallback
+    from quotadeck.usage.models import CostCurrency
+
+    monkeypatch.setenv("APPDATA", str(tmp_path / "Roaming"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    quote = resolve_usd_krw_rate(
+        fetcher=_live_fetcher(_payload_bytes("1410")),
+        cache_path=tmp_path / "fx-rate.json",
+        now=NOW,
+        manual_rate=Decimal("1400"),
+    )
+    monkeypatch.setattr(
+        "quotadeck.core.scheduler.resolve_usd_krw_rate",
+        lambda **kwargs: (
+            quote
+            if kwargs.get("fetcher") is None
+            else resolve_usd_krw_rate(now=NOW, **kwargs)
+        ),
+    )
+    runtime = QuotaDeckRuntime(
+        AppConfig(
+            metric_mode=MetricMode.CUMULATIVE,
+            cost_currency=CostCurrency.KRW,
+            usd_to_krw_rate=1400,
+            fx_auto=True,
+        ),
+        mock=True,
+    )
+    resolved = runtime.refresh_fx()
+    assert resolved is not None
+    assert runtime.cumulative.fx is resolved
+    assert runtime.effective_usd_to_krw_rate() == 1410
+    assert resolved.fallback is FxFallback.LIVE
+    assert "spot" not in (resolved.source or "").lower()
+
+    runtime.config.fx_auto = False
+    runtime.config.usd_to_krw_rate = 1555
+    manual = runtime.refresh_fx()
+    assert manual is not None
+    assert manual.fallback is FxFallback.MANUAL
+    assert runtime.effective_usd_to_krw_rate() == 1555

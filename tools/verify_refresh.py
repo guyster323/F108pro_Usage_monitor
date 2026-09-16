@@ -254,7 +254,7 @@ def _check_rotation_and_payload() -> None:
         for index in range(len(ordered)):
             start = index * budget.frames_per_account
             account_frames = frames[start : start + budget.frames_per_account]
-            encoded_ms = sum(delay_byte(frame.delay_ms) * 20 for frame in account_frames)
+            encoded_ms = sum(delay_byte(frame.delay_ms) * 4 for frame in account_frames)
             assert encoded_ms == 5000
         assert all(frame.image.size == (LCD_WIDTH, LCD_HEIGHT) for frame in frames)
         payload = build_payload(frames)
@@ -268,7 +268,7 @@ def _check_rotation_and_payload() -> None:
     else:
         raise AssertionError("impossible budget did not raise SceneBudgetError")
 
-    validate_frames([solid_frame(0, 0, 0, 5100)] * LCD_MAX_FRAMES)
+    validate_frames([solid_frame(0, 0, 0, 1020)] * LCD_MAX_FRAMES)
     try:
         validate_frames([Frame(new_canvas(), 5120)])
     except PayloadError:

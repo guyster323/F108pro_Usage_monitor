@@ -39,10 +39,10 @@ def test_rgb565_preview_round_trip() -> None:
 
 
 def test_delay_byte_units() -> None:
-    assert delay_byte(20) == 1
-    assert delay_byte(400) == 20
-    assert delay_byte(5100) == 255
-    assert delay_byte(1) == 1
+    assert delay_byte(20) == 5
+    assert delay_byte(400) == 100
+    assert delay_byte(1020) == 255
+    assert delay_byte(1) == 5
 
 def test_build_payload_header_and_padding() -> None:
     frame = solid_frame(255, 0, 0, delay_ms=400)
@@ -72,13 +72,13 @@ def test_accepts_exact_hard_frame_limit() -> None:
 
 def test_rejects_delay_above_firmware_limit() -> None:
     img = Image.new("RGB", (LCD_WIDTH, LCD_HEIGHT), (0, 0, 0))
-    with pytest.raises(PayloadError, match="5100"):
-        validate_frames([Frame(image=img, delay_ms=5120)])
+    with pytest.raises(PayloadError, match="1020"):
+        validate_frames([Frame(image=img, delay_ms=1040)])
 
 
 def test_rejects_delay_between_firmware_ticks() -> None:
     img = Image.new("RGB", (LCD_WIDTH, LCD_HEIGHT), (0, 0, 0))
-    with pytest.raises(PayloadError, match="20 ms tick"):
+    with pytest.raises(PayloadError, match="20 ms logical/GIF tick"):
         validate_frames([Frame(image=img, delay_ms=30)])
 
 

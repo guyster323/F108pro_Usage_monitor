@@ -18,10 +18,21 @@ LCD_HEADER_BYTES = 256
 LCD_PAGE_BYTES = 4096
 LCD_MAX_FRAMES = 141
 LCD_SOFT_CAP = 48
-LCD_DEFAULT_BUDGET = 32
+# 8 accounts × 5 s need ≥5 frames each (40) after the 4 ms firmware tick.
+LCD_DEFAULT_BUDGET = 48
+LEGACY_HIDDEN_FRAME_BUDGET = 32
 LCD_IMAGE_NUMBER = 1
-# Firmware stores delay in 20 ms units, max 255 → 5.1 s per frame.
-LCD_MAX_DELAY_MS = 255 * 20
+# Official mkimage (parsiya/f108-pro) writes delay_byte = GIF_cs / 2,
+# which equals logical_ms / 20. That packing is not the LCD timer quantum.
+# Connected F108 Pro playback of those bytes is 5× faster than a 20 ms
+# interpretation (5 s configured → ~1 s on the LCD). 20 / 5 = 4 ms, a
+# typical 250 Hz panel/USB tick. Hardware duration = delay_byte * 4 ms.
+FIRMWARE_DELAY_TICK_MS = 4
+# GUI, QTimer preview, and GIF89a keep millisecond durations. GIF stores
+# centiseconds (10 ms). QuotaDeck quantizes logical delays to 20 ms so
+# preview, GIF, and firmware bytes stay exact together (lcm of 4 and 10).
+LOGICAL_DELAY_TICK_MS = 20
+LCD_MAX_DELAY_MS = 255 * FIRMWARE_DELAY_TICK_MS
 
 CMD_BEGIN = bytes([0x04, 0x18])
 CMD_APPLY = bytes([0x04, 0x02])

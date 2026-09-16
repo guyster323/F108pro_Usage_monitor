@@ -126,10 +126,17 @@ def _cursor_reported_costs(
     account: AccountRef,
     settings: CollectorSettings,
 ) -> dict[str, Decimal | None]:
-    files = discover_cursor_export_files(
-        explicit=settings.cursor_export_path or settings.import_path,
-        account=account.account_id,
-        bind_generic_account=settings.cursor_usage_csv_account,
+    if settings.admin_enabled_for(account.account_id):
+        return {}
+    gui = settings.gui_csv_for(account.account_id)
+    files = (
+        [gui]
+        if gui is not None
+        else discover_cursor_export_files(
+            explicit=settings.cursor_export_path or settings.import_path,
+            account=account.account_id,
+            bind_generic_account=settings.cursor_usage_csv_account,
+        )
     )
     for path in files:
         if path.suffix.casefold() != ".csv":
@@ -139,7 +146,9 @@ def _cursor_reported_costs(
             account=account.account_id,
             max_records=settings.max_records,
             max_bytes=settings.max_json_bytes,
-            bind_generic_account=settings.cursor_usage_csv_account,
+            bind_generic_account=(
+                account.account_id if gui is not None else settings.cursor_usage_csv_account
+            ),
         )
         if result.usable:
             return {
@@ -327,6 +336,7 @@ def collect_normalized_usage(
             Path(account.source_path),
             account_id=account.account_id,
             collector=settings,
+            account_email=account.extra.get("email") or None,
         )
         load_results.append(result)
         if result.dataset is None:

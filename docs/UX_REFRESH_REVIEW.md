@@ -26,7 +26,7 @@
 | 마지막 summary를 읽을 수 없었다. | 240×135 안에 여러 계정과 수치를 동시에 축소해 넣어 글자 높이와 정보 밀도가 LCD 물리 한계를 넘었다. | summary 계열을 playlist에서 완전히 제거하고 계정별 화면에 전체 면적을 배정한다. |
 | Quota 정보가 멀리서 구분되지 않았다. | 얇은 막대와 막대 밖의 작은 레이블·숫자가 서로 다른 시선 위치에 있었고, 배경 대비도 일정하지 않았다. | 막대 자체를 정보 카드로 만들고 레이블과 퍼센트를 내부에 넣는다. 채움 경계를 기준으로 글자색을 분할한다. |
 | 캐릭터가 작거나 뭉개졌다. | 원본 아트, 런타임 크기, 투명 여백, 상태 프레임, RGB565 변환에 대한 재현 가능한 계약이 없었다. | 이미지 생성 원본과 런타임 PNG를 분리하고, 88×108·binary alpha·48색·RGB565-safe 변환을 자동화한다. |
-| 설정한 초와 실재 재생 시간이 어긋날 수 있었다. | F108 펌웨어는 delay를 20ms 단위 1바이트로 저장한다. 일반 밀리초를 프레임별로 반올림하면 누적 오차가 생긴다. | 먼저 전체 시간을 20ms tick으로 양자화한 다음 정수 tick을 프레임에 나눠 합계를 정확히 보존한다. |
+| 설정한 초와 실재 재생 시간이 어긋날 수 있었다. | 공식 mkimage는 delay를 `GIF_cs / 2`(= ms/20)로 쓰지만, 연결된 F108 Pro는 그 바이트를 20ms가 아니라 4ms로 재생한다(5초 설정 → 약 1초). | GUI/GIF는 20ms 논리 시간, payload는 `delay_ms / 4` 바이트로 나눠 프리뷰와 하드웨어가 같은 5초를 유지한다. |
 
 ## 240×135 화면 레이아웃 계약
 
@@ -50,7 +50,7 @@
 비용 행 좌측 시작(THIS 열)에는 7×7 투명 픽셀 코인을 둔다.
 모델명, `TOTAL`, `365D`, `SINCE`는 이 작은 LCD에 넣지 않는다.
 
-## 정확한 계정별 5초 / 20ms 시간 계약
+## 정확한 계정별 5초 / 논리 20ms · 펌웨어 4ms 시간 계약
 
 표시 시간과 provider polling, 플래시 업로드 제한은 서로 다른 개념이다.
 
@@ -62,24 +62,28 @@
 
 기본 5초 계약은 다음 순서로 만들어진다.
 
-1. 요청 시간 `requested_ms`를 가장 가까운 20ms tick으로 양자화한다.
+1. 요청 시간 `requested_ms`를 가장 가까운 20ms 논리/GIF tick으로 양자화한다.
    `total_ticks = max(1, round(requested_ms / 20))`
-2. 실제 계정 시간은 `account_hold_ms = total_ticks × 20`이다.
+2. 실제 계정 시간은 `account_hold_ms = total_ticks × 20`이다. Preview와 GIF는 이 밀리초를 그대로 쓴다.
 3. 유효 frame budget은 요청값, soft cap 48, 펌웨어 hard limit 141 중 가장 작은 값이다.
 4. 계정 수가 `N`이면 계정당 수용량은 `floor(budget / N)`이다.
-5. 한 프레임의 최대 delay가 5,100ms이므로 계정당 최소 프레임 수는 `ceil(account_hold_ms / 5100)`이다. 모든 계정을 안전하게 담을 수 없으면 계정을 조용히 누락하지 않고 `SceneBudgetError`를 낸다.
+5. 한 프레임의 최대 하드웨어 delay가 1,020ms(255 × 4ms)이므로 계정당 최소 프레임 수는 `ceil(account_hold_ms / 1020)`이다. 모든 계정을 안전하게 담을 수 없으면 계정을 조용히 누락하지 않고 `SceneBudgetError`를 낸다.
 6. 가능한 범위에서 계정당 최대 8프레임을 사용한다. `divmod(total_ticks, frames_per_account)`로 tick을 나누고 나머지 tick은 마지막 프레임부터 1개씩 더한다.
-7. payload는 각 프레임 delay를 정확히 `delay_ms / 20`인 1바이트 값으로 저장한다. 허용 범위는 1~255 tick, 즉 20~5,100ms다.
+7. payload는 각 프레임 delay를 정확히 `delay_ms / 4`인 1바이트 값으로 저장한다. 허용 범위는 1~255 firmware tick, 즉 논리 20~1,020ms다.
 
-기본값에서 계정당 8프레임이면 delay는 `620ms × 6 + 640ms × 2 = 5,000ms`다. payload에는 `31 × 6 + 32 × 2 = 250 tick`으로 기록되므로 하드웨어 재생 합도 정확히 5초다. 계정이 8개이고 frame budget이 32라면 계정당 4프레임을 사용하며 `1,240ms × 2 + 1,260ms × 2 = 5,000ms`가 된다.
+기본값에서 계정 수가 적으면 계정당 8프레임을 쓰고 논리 delay는 `620ms × 6 + 640ms × 2 = 5,000ms`다. payload에는 `155 × 6 + 160 × 2 = 1,250` firmware tick이 기록되며 `1,250 × 4ms = 5,000ms`로 하드웨어 재생 합도 정확히 5초다. 8계정 × 5초는 계정당 최소 5프레임(40)이 필요하므로 숨은 기본 `frame_budget`은 48이다. 구설정의 숨은 값 32는 schema v7에서 48로 올린다. 유효 budget은 soft cap 48과 hard limit 141을 넘지 않는다. 10계정 × 5초(최소 50프레임)나 8계정 × 8초(최소 64프레임)처럼 한도를 넘으면 계정을 조용히 빼지 않고 `SceneBudgetError`로 닫는다.
+
+빈 quota playlist와 누적 화면에서 보이는 계정이 없을 때(연결되지 않은 Cursor만 있는 경우 포함)는 동일 빈 카드를 반복한 idle 시퀀스를 쓴다. Preview 합은 예전처럼 2,000ms이고, 각 프레임 delay는 1,020ms 이하이며 20ms 논리 tick과 4ms firmware tick으로 정확히 인코딩된다.
 
 따라서 빈 계정 예외 화면을 제외하면 한 playlist의 총 재생 시간은 `선택 계정 수 × 계정별 hold`다. FIXED는 사용자 순서를 유지하고 SMART는 severity 순으로 안정 정렬하지만, 두 모드 모두 각 계정을 한 번만 표시한다.
 
-설정 파일은 `config_version = 5`다. v4에서 도입한 잔여 리밋/누적 사용량
+설정 파일은 `config_version = 7`이다. v4에서 도입한 잔여 리밋/누적 사용량
 선택 `metric_mode`에 더해, v5는 `cumulative_period`, `cost_currency`,
-`usd_to_krw_rate`를 기록한다. 이 필드가 없는 구버전 설정은 월별, KRW,
-1 USD당 1,400원으로 마이그레이션하며, `metric_mode`가 없는 더 오래된 설정은
-계속 잔여 리밋을 사용한다. 환율은 사용자가 직접 바꾸는 표시용 환율이며 자동 또는
+`usd_to_krw_rate`를 기록하고, v6는 Cursor CSV/Admin 바인딩
+`cursor_bindings`를 기록하며, v7은 4ms firmware tick 이후 8계정 × 5초를
+담기 위해 숨은 `frame_budget` 32를 48로 마이그레이션한다. 이 필드가 없는
+구버전 설정은 월별, KRW, 1 USD당 1,400원과 빈 바인딩으로 마이그레이션하며,
+`metric_mode`가 없는 더 오래된 설정은 계속 잔여 리밋을 사용한다. 환율은 사용자가 직접 바꾸는 표시용 환율이며 자동 또는
 실시간으로 조회되지 않는다. 새 설정 또는 표시 시간 필드가 없는 설정에는 5초를
 적용한다. 구버전 JSON에 이미 `scene_hold_seconds`가 있으면 과거 기본값과 사용자의
 명시적 선택을 구분할 수 없으므로 2~20초 범위의 4초·10초 같은 명시값은 보존하고
@@ -142,19 +146,18 @@ KRW 또는 USD 정가 환산치다. 예를 들어 토큰은 `0.6B / 1.2B`, GUI�
 - 일별 `THIS`는 오늘 사용량이고, `AVG`는 이전 완료일 평균이다. 최소 7개의 완료일이
   있어야 평균, 막대와 반응 단계를 확정한다.
 - 월별 `THIS`는 현월 1일부터 현재까지의 MTD 사용량이고, `AVG`는 이전 완료 월의
-  월평균이다. 최소 1개의 완료 월이 필요하다. 최초 관측일이 월 중간이면 그 부분월은
-  평균에서 제외하고, 그 뒤의 사용 기록 없는 완료 월은 0으로 포함한다. MTD를 월말
-  예상치로 환산하거나 일할 보정하지 않는다.
+  월평균이다. 최초 관측일이 월 중간이면 보존된 달력일의 일평균을 해당 월 전체
+  일수로 환산해 첫 월의 추정 표본으로 포함하고 `EST`로 표시한다. 그 뒤의 사용 기록
+  없는 완료 월은 0으로 포함한다. 현재 MTD 자체는 월말 예상치로 환산하지 않는다.
 - 막대 숫자는 `THIS 토큰 ÷ AVG 토큰 × 100`이다. track의 채움은 한 달 또는 하루
   평균에 도달하는 100%에서 포화하지만, 숫자와 캐릭터 단계는 초과량을 보존한다.
   150%와 200%는 그대로 표시하고 300% 이상은 `300%+`다.
 
-정상 막대 caption은 통화와 무관하게 월별 `M AVG`, 일별 `D AVG`다. 비교 이력
-부족은 `M BUILD`/`D BUILD`, 일부 기록만 읽힌 상태는
-`M PARTIAL`/`D PARTIAL`, 사용할 수 없는 원장은 `M N/A`/`D N/A`로 구분한다.
-`BUILD`와 `PARTIAL`은 정상 퍼센트를 만들지 않으며, partial subtotal에는 비용과
-놀람 단계를 붙이지 않는다. 범위 안에 유효 관측이 없으면 측정된 0으로 꾸미지 않고
-`N/A`다.
+정상 막대 caption은 통화와 무관하게 월별 `M AVG`, 일별 `D AVG`다. 첫 부분 월을
+환산한 평균은 `M EST`, 일부 기록만 읽힌 상태는 `M PARTIAL`/`D PARTIAL`로
+구분하며 둘 다 최선 추정 숫자와 퍼센트를 유지한다. 사용할 과거 표본이 전혀 없을
+때만 `M/D BUILD`, 귀속 가능한 원장이 없을 때만 `M/D N/A`를 사용한다. partial
+subtotal에는 비용을 붙이지 않는다.
 
 현재 LCD의 계정 누적 카드는 Codex `sessions`/`archived_sessions`와 Claude Code
 `projects`의 로컬 JSONL 메타데이터를 지원한다. 이는 이 기기의 보존 기록이지 계정
@@ -183,7 +186,7 @@ partial scan, unknown model/category, 비교 이력 부족 중 하나라도 있�
 표시하지 않는다. KRW는 USD 결과에 GUI의 수동 `usd_to_krw_rate`를 적용한 표시값이며
 기본값은 1,400원/USD이고 실시간 환율이 아니다. 정가 snapshot 역시 실시간 web 가격,
 long-context/fast/batch/지역/도구 별도 요금 또는 청구서가 아니다. 이 주의 문구와
-가격표 날짜, 수동 환율은 GUI에서 확인한다. 세부 지원표와 가격 출처는
+가격표 날짜와 환율 출처(재무부 분기 고시 / 캐시 / 수동 폴백)는 GUI hover에서 확인한다. 세부 지원표와 가격 출처는
 [CUMULATIVE_USAGE.md](CUMULATIVE_USAGE.md)에 있다.
 
 ## 이미지 생성 원본에서 88×108 런타임 asset까지
@@ -241,14 +244,14 @@ themes/quotadeck-crew/provider/<provider>/<state>_01.png
 
 | 경로 | 책임 |
 |---|---|
-| `src/quotadeck/config.py` | 새 설정의 5초 기본값, 기존 명시값 보존, config v5와 독립 `metric_mode`·일별/월별·KRW/USD·수동 환율 기록, 2~20초 저장 범위 |
-| `src/quotadeck/app/i18n.py` | 표시 정보·기간·통화 선택, 수동 환율, 계정당 표시 시간, 누적 local-history/가격 안내와 Flash 상한 표시 |
+| `src/quotadeck/config.py` | 새 설정의 5초 기본값, 기존 명시값 보존, config v5와 독립 `metric_mode`·일별/월별·KRW/USD·자동 환율+수동 폴백 기록, 2~20초 저장 범위 |
+| `src/quotadeck/app/i18n.py` | 표시 정보·기간·통화 선택, 자동/수동 환율, 계정당 표시 시간, hover 안내와 Flash 16시간 추정 |
 | `src/quotadeck/cli.py`, `src/quotadeck/__main__.py`, `src/quotadeck/diagnostics.py` | GUI import 전부터 시작하는 회전 로그, 예외/fault/Qt hook, 민감정보 마스킹, 정상·비정상 종료 marker |
 | `src/quotadeck/app/main_window.py`, `tray.py` | worker 실제 종료 기준 수명주기, 안전한 tray 종료 대기, tray/menu 소유권, 60초 health watchdog와 로그 폴더 메뉴 |
 | `src/quotadeck/core/flashbudget.py`, `scheduler.py` | 올림 기반 하루 횟수, 잠금·선예약 기반 Flash 상태 보존, quota/cumulative poll·render·upload |
 | `src/quotadeck/usage/` | Codex/Claude 로컬 scanner, 일별/월별 날짜·모델·평균 분석, 보수적 Grok adapter, TTL cache, 기간별 LCD snapshot |
 | `src/quotadeck/usage/pricing.py`, `pricing_catalog_2026_09_11.py` | 날짜가 고정된 공식 API 정가 snapshot과 기간별 THIS/AVG all-or-nothing 비용 추정 |
-| `src/quotadeck/renderer/budget.py` | 20ms tick 기반의 균등·정확한 account slot 및 frame budget 오류 처리 |
+| `src/quotadeck/renderer/budget.py` | 논리 20ms / 펌웨어 4ms tick 기반의 균등·정확한 account slot 및 frame budget 오류 처리 |
 | `src/quotadeck/renderer/scenes.py` | account-only playlist, summary/transition/중복 제거, 상태 애니메이션 |
 | `src/quotadeck/renderer/layout.py` | 240×135 고정 좌표, 88×108 캐릭터 슬롯, 1/2개 full-height quota bar와 큰 THIS/AVG 토큰·비용 표 |
 | `src/quotadeck/renderer/canvas.py` | 결정적 픽셀 글꼴, 큰 퍼센트, split-colour text mask, 100% 포화·300%+ 사용량 막대 |
@@ -288,15 +291,15 @@ git status --short
 - `verify_refresh.py`, sprite `--check`, theme validation, 전체 pytest가 모두 exit code 0이다.
 - sprite 재생성 후 `themes/quotadeck-crew`에 예상하지 않은 diff가 생기지 않는다.
 - 렌더 프레임은 모두 240×135이고 총 frame 수는 soft cap 48 및 hard limit 141을 넘지 않는다.
-- 각 계정의 payload delay 합이 기본값에서 정확히 250 tick, 즉 5,000ms다.
+- 각 계정의 payload delay 합이 기본값에서 정확히 1,250 firmware tick(4ms), 즉 5,000ms다. Preview 논리 합도 5,000ms다.
 - SMART/FIXED 모두 선택 계정의 누락과 중복이 없다.
 - raw payload는 불변 snapshot으로 고정되며 HID 명령을 보내기 전에 1~141 frame, non-zero delay, frame 수에 맞는 정확한 padded length를 만족해야 한다.
 - 50% bar의 글자 픽셀이 fill 쪽에서는 흰색, empty 쪽에서는 검은색 계열이다.
 - provider마다 8개 quota/status 상태와 5개 누적 반응 상태, 상태마다 서로 다른
   2개 프레임, 총 104개의 88×108 runtime PNG가 존재한다.
 - 누적 분석은 local calendar day/month와 DST를 보존한다. 일별은 최소 7개 완료일,
-  월별은 첫 부분월을 제외한 최소 1개 완료 월 이후에만 평균을 확정하고, 이후 빈
-  완료 월은 0으로 포함한다.
+  월별은 첫 부분 월을 달력일 기준으로 일할 환산해 표본에 포함하고, 이후 빈 완료
+  월은 0으로 포함한다.
 - 사용량 막대는 `THIS 토큰 ÷ AVG 토큰`이며 채움은 100%에서 포화하되 150%, 200%,
   `300%+` 숫자와 `<1×`, `1~<1.5×`, `1.5~<2×`, `2~<3×`, `≥3×` 캐릭터 경계를
   정확히 보존한다.

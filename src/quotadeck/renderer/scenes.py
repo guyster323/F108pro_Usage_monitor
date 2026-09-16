@@ -5,15 +5,16 @@ from pathlib import Path
 
 from quotadeck.core.models import DisplayMode, Severity, UsageSnapshot
 from quotadeck.core.severity import character_state
+from quotadeck.devices.aula_f108.constants import LCD_DEFAULT_BUDGET
 from quotadeck.devices.aula_f108.payload import Frame
-from quotadeck.renderer.budget import allocate
+from quotadeck.renderer.budget import allocate, idle_placeholder_delays
 from quotadeck.renderer.layout import (
     paint_account,
     paint_cumulative_account,
     paint_empty,
 )
 from quotadeck.renderer.sprites import Theme, load_theme
-from quotadeck.usage.display import CumulativeSnapshot
+from quotadeck.usage.display import CumulativeSnapshot, visible_on_cumulative_lcd
 from quotadeck.usage.models import CostCurrency
 
 
@@ -38,13 +39,19 @@ def _sprite_index(
     return cycle[frame_index % len(cycle)]
 
 
+def idle_placeholder_frames() -> list[Frame]:
+    """Repeat the empty card so Preview stays 2000 ms and every delay encodes."""
+    image = paint_empty()
+    return [Frame(image=image, delay_ms=delay) for delay in idle_placeholder_delays()]
+
+
 def render_playlist(
     snapshots: list[UsageSnapshot],
     severities: dict[str, Severity],
     theme: Theme | Path,
     *,
     mode: DisplayMode = DisplayMode.SMART,
-    frame_budget: int = 32,
+    frame_budget: int = LCD_DEFAULT_BUDGET,
     hold_ms: int | None = None,
 ) -> list[Frame]:
     """Render one equal-duration full-screen slot for every selected account."""
@@ -52,7 +59,7 @@ def render_playlist(
     # runtime validator instead of trusting an unchecked dataclass instance.
     theme_obj = load_theme(theme.root) if isinstance(theme, Theme) else load_theme(Path(theme))
     if not snapshots:
-        return [Frame(image=paint_empty(), delay_ms=2000)]
+        return idle_placeholder_frames()
 
     ordered = _order(snapshots, severities, mode)
     budget = allocate(len(ordered), frame_budget, hold_ms=hold_ms)
@@ -96,7 +103,7 @@ def render_cumulative_playlist(
     theme: Theme | Path,
     *,
     mode: DisplayMode = DisplayMode.SMART,
-    frame_budget: int = 32,
+    frame_budget: int = LCD_DEFAULT_BUDGET,
     hold_ms: int | None = None,
     currency: CostCurrency = CostCurrency.USD,
     usd_to_krw_rate: Decimal | int | float | str = 1400,
@@ -105,9 +112,11 @@ def render_cumulative_playlist(
 
     theme_obj = load_theme(theme.root) if isinstance(theme, Theme) else load_theme(Path(theme))
     if not snapshots:
-        return [Frame(image=paint_empty(), delay_ms=2000)]
+        return idle_placeholder_frames()
 
     ordered = _order_cumulative(snapshots, mode)
+    if not ordered:
+        return idle_placeholder_frames()
     budget = allocate(len(ordered), frame_budget, hold_ms=hold_ms)
     frames: list[Frame] = []
     total = len(ordered)
@@ -150,8 +159,9 @@ def _order_cumulative(
 ) -> list[CumulativeSnapshot]:
     """Put the highest measured average multiple first and unknowns last."""
 
+    visible = [item for item in snapshots if visible_on_cumulative_lcd(item)]
     if mode == DisplayMode.FIXED:
-        return list(snapshots)
+        return list(visible)
 
     def priority(snapshot: CumulativeSnapshot) -> tuple[int, float]:
         if not snapshot.available:
@@ -162,7 +172,7 @@ def _order_cumulative(
         return 0, -ratio
 
     # Sorting is stable, so equal ratios retain the user's account order.
-    return sorted(snapshots, key=priority)
+    return sorted(visible, key=priority)
 
 
 def _order(

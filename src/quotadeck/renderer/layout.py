@@ -468,10 +468,15 @@ def cumulative_bar_caption(
     del currency  # Retain the call signature for renderer/hash compatibility.
 
     period = "D" if snapshot.period is UsagePeriod.DAILY else "M"
+    if snapshot.status == "stale":
+        return f"{period} STALE"
     if snapshot.status == "partial":
         return f"{period} PARTIAL"
     if not snapshot.available:
         return f"{period} N/A"
+    selected = snapshot.period_comparison
+    if selected is not None and selected.history_estimated:
+        return f"{period} EST"
     if snapshot.intensity is UsageIntensity.INSUFFICIENT_HISTORY:
         return f"{period} BUILD"
     return f"{period} AVG"

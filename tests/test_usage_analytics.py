@@ -234,8 +234,10 @@ def test_per_model_totals_are_sorted_by_token_count() -> None:
     assert [item.model for item in report.today.models] == ["large", "small"]
 
 
-def test_monthly_comparison_uses_mtd_and_only_complete_calendar_months() -> None:
+def test_monthly_comparison_prorates_first_partial_month_for_best_effort_average() -> None:
     observations = (
+        # May 15-31 is the retained 17-day slice. It is prorated to 31 days:
+        # round_half_up(999 * 31 / 17) = 1,822.
         _observation(datetime(2026, 5, 15, tzinfo=timezone.utc), 999, "partial"),
         _observation(
             datetime(2026, 6, 5, tzinfo=timezone.utc),
@@ -267,13 +269,15 @@ def test_monthly_comparison_uses_mtd_and_only_complete_calendar_months() -> None
     assert comparison.current_start == date(2026, 9, 1)
     assert comparison.current_end == date(2026, 9, 11)
     assert comparison.current_tokens == 150
-    assert comparison.history_periods == 3
-    assert comparison.history_total_tokens == 300
-    assert comparison.average_tokens == 100
-    assert comparison.ratio == 1.5
-    assert comparison.intensity is UsageIntensity.ABOVE_1_5X
+    assert comparison.history_periods == 4
+    assert comparison.history_estimated
+    assert comparison.history_total_tokens == 2_122
+    assert comparison.average_tokens == 531
+    assert comparison.ratio == pytest.approx(600 / 2_122)
+    assert comparison.intensity is UsageIntensity.BELOW_AVERAGE
     assert [item.model for item in comparison.current_models] == ["current"]
     assert [item.model for item in comparison.history_models] == [
+        "model",
         "history-large",
         "history-small",
     ]
@@ -291,6 +295,7 @@ def test_monthly_comparison_includes_first_month_only_from_day_one() -> None:
     comparison = report.comparison("monthly")
     assert comparison is not None
     assert comparison.history_periods == 2
+    assert not comparison.history_estimated
     assert comparison.average_tokens == 20
     assert comparison.ratio == 1
 

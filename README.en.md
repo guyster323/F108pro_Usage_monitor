@@ -25,17 +25,25 @@ retained on this device**, and uploads a 240×135 RGB565 playlist to the AULA
 F108 Pro LCD. Credentials and conversation content stay with the official CLI
 or app.
 
-**v0.2.3:** Review verified that existing Codex local delta reconciliation
-already matches UsageService analytics totals; this patch preserves that
-path and does not change Codex event rollup. The actual fixes are safe
-Grok session-inventory aggregation (not an account ledger) and wiring
-the normalized engine into the F108 cumulative LCD path, so Cursor
-attributable exports can show hypothetical API `LIST` cost while Grok
-session totals stay off the daily THIS/AVG card. The default Win32
-transport now treats `GET_FEATURE` counts of 64 and 65 as report-ID
-prefixed buffers, drops `buffer[0]` so the payload starts at
-`04 18 00 01`, pads only the missing trailing byte for count 64, and
-still rejects shorter reads.
+**v0.2.3 latest:** QuotaDeck now includes period/model token aggregation,
+partial-month `AVG EST`, automatic KRW FX, and a compact settings UI. Cursor
+can import a Usage CSV without renaming it or connect an Enterprise Team Admin
+API key stored only in Windows Credential Manager. The onboarding dialog opens
+the official [Analytics dashboard](https://cursor.com/dashboard/analytics) and
+[Admin API guide](https://cursor.com/docs/account/teams/admin-api).
+
+Current Codex `token_usage_record` files are grouped by `thread_id`, so sibling
+threads sharing one parent session are neither mislabeled as damaged nor
+dropped. A sanitized TEAM-profile verification scanned 36 files and 12,516
+usage events into 10,387 observations with zero malformed records. A PARTIAL
+snapshot with a reliable ratio still uses the five reaction bands, including
+the collapsed character at 300% or above.
+
+Measured F108 Pro playback was five times faster than the old 20 ms
+interpretation, so payload delays now use a 4 ms firmware tick while GUI/GIF
+timing stays on an exact 20 ms logical grid. A configured five-second account
+slot is therefore five seconds in both Preview and the LCD payload. The hidden
+frame budget defaults to 48; legacy 32 values migrate under config v7.
 
 On 2026-09-12, the connected F108 Pro accepted 8 frames (520,192 bytes)
 through the default Win32 backend, with all 127 page ACKs and the final
@@ -57,10 +65,12 @@ bytes when the pixels are unchanged. Independent checks passed for
 The `pyproject.toml` test path includes both `src` and the repository root, so
 both `pytest` and `python -m pytest` collect the regression tests under `tools`.
 
-The integrated run on 2026-09-12 finished with **434 passed, 1 skipped, and
-8 subtests passed**, and the Windows GitHub Actions build succeeded. The one
-skip is an existing test that requires permission to create a Windows directory
-symlink. See the [CI run](https://github.com/guyster323/F108pro_Usage_monitor/actions/runs/34682870012).
+The latest local integrated run on 2026-09-16 finished with **512 passed,
+1 skipped, and 8 subtests passed**. Documentation, sprite, frame-budget, and
+packaged-render checks also passed. The one skip is an existing test that
+requires permission to create a Windows directory symlink. The previous
+Windows [CI run](https://github.com/guyster323/F108pro_Usage_monitor/actions/runs/34682870012)
+remains available for reference.
 
 > New here? Follow **Getting started**. Protocol, themes, and security live under [docs/](docs/).
 ## Architecture
@@ -132,15 +142,21 @@ fabricated measured zero.
 | --- | --- | --- | --- |
 | Codex | Local `sessions` and `archived_sessions` JSONL | Supported | Hypothetical API `LIST` (API-key or subscription; not reported spend). Custom endpoints stay `N/A` |
 | Claude Code | Local `projects/**/*.jsonl` response metadata | Supported | Hypothetical API `LIST` (API-key or subscription; not reported spend). Custom endpoints stay `N/A` |
-| Cursor | N/A unless an attributable token-stats / server Usage export exists | Conditional | Hypothetical API `LIST` when an attributable export exists; never mixed with reported spend |
+| Cursor | GUI-imported Usage CSV or Enterprise Team Admin API; token-stats/export remains available for advanced setups | Conditional | Hypothetical API `LIST` when attributable data exists; never mixed with reported spend |
 | Grok Build | `grok usage` exposes individual session totals only | Account card is N/A by default; daily analysis is conditional on separately supplied, retained external OTel v1 events | Session totals are not shown as daily THIS/AVG |
 
 Cursor still requires an admin ledger or a trustworthy export for account
-scope. 0.2.3 never invents Cursor tokens from `state.vscdb`; it enables the
-card only from collector data that already has account and time attribution.
-token-stats is the preferred optional collector, native Codex/Claude parsers
-are the fallback, and ccusage is a validation/fallback boundary. Installation
-is optional. Grok resume/fork histories can overlap, so QuotaDeck does not sum
+scope. 0.2.3 never invents Cursor tokens from `state.vscdb`. The settings
+app can import a dashboard CSV into `%APPDATA%\QuotaDeck\cursor-usage\`
+without a rename or environment variable, and Enterprise admins can store a
+Team Admin API key only in Windows Credential Manager for current-user
+`filtered-usage-events` sync at most once per hour. A successful empty
+current-user result validates the key: no prior cache shows no-usage-yet
+instead of a fabricated zero, and a non-empty last-known-good cache is kept
+stale. Unconnected Cursor is
+omitted from cumulative LCD/Preview rotation only. token-stats is the
+preferred optional collector, native Codex/Claude parsers are the fallback,
+and ccusage is a validation/fallback boundary. Installation is optional. Grok resume/fork histories can overlap, so QuotaDeck does not sum
 sessions or treat `updatedAt` as a usage date. See the
 [cumulative-usage contract](docs/CUMULATIVE_USAGE.md) and
 [COLLECTORS.md](docs/COLLECTORS.md).
@@ -152,9 +168,10 @@ The comparison period is selected in the settings app:
   empty days after retained history begins count as zero, while prehistory is
   never invented.
 - **Monthly** — `THIS` is the current calendar month's month-to-date tokens;
-  `AVG` is the average of prior completed calendar months. At least one complete
-  prior month is required. A first month retained only in part is excluded;
-  later empty completed months are included as zero.
+  `AVG` is the average of prior calendar-month samples. A first month retained
+  only in part is prorated from its observed calendar-day average to the full
+  number of days in that month and marked `EST`; later empty completed months
+  are included as zero. The current MTD value itself is not projected.
 
 The LCD reuses the remaining-limit bar concept. Its numeric value is
 `THIS tokens / AVG tokens × 100`; the fill saturates at 100% while the label
@@ -164,9 +181,10 @@ transparent pixel coin sits at the left start of the cost row. Both token
 values use one shared compact unit (for example `0.6B / 1.2B`). Cost pairs also
 use ASCII `K/M/B`, such as `1K / 2K` when the GUI is set to **KRW (10,000 won)**
 or `0.4K / 0.8K` in USD. The normal bar caption contains only the period and
-baseline (`M AVG` or `D AVG`); the LCD intentionally omits currency labels and
-Hangul. Insufficient history, partial history, and an
-unavailable ledger instead show `M/D BUILD`, `M/D PARTIAL`, and `M/D N/A`.
+baseline (`M AVG` or `D AVG`), while a prorated first month shows `M EST`; the
+LCD intentionally omits currency labels and Hangul. Read-error subtotals keep
+their numeric best-effort comparison under `M/D PARTIAL`. `M/D BUILD` is
+reserved for no historical sample and `M/D N/A` for no attributable ledger.
 Model names never appear on the LCD. The desktop account row shows the top two
 models for the selected period, and its tooltip contains the full model list.
 
@@ -186,10 +204,10 @@ reacts with five surprise states:
 | `≥ 3.0×` | Comically collapsed |
 
 Cost uses the bundled snapshot of official API list prices dated 2026-09-11.
-Choose **KRW** or **USD** in settings. KRW conversion uses the manually entered
-rate (default **1,400 KRW/USD**) on the LCD path; `quotadeck usage-engine`
-can also apply a fetched Treasury quote with last-known-good then manual
-fallback. `THIS` and `AVG` are independently calculated from the
+Choose **KRW** or **USD** in settings. KRW conversion defaults to **Auto FX**:
+the official U.S. Treasury quarterly reporting rate (not a realtime spot quote),
+then the last-known-good cache, then the **1,400 KRW/USD** manual fallback.
+`quotadeck usage-engine` uses the same chain. `THIS` and `AVG` are independently calculated from the
 actual model/token mix in those periods, but the pair is all-or-nothing: if
 either side cannot be priced completely, both are `N/A`. These are list-price
 equivalents of observed tokens, not actual spend or an invoice; the current
@@ -207,8 +225,10 @@ hypothetical `LIST` equivalent when coverage is complete.
 ### Windows exe
 
 [dist/QuotaDeck.exe](dist/QuotaDeck.exe) runs without a Python installation.
-It was rebuilt on 2026-09-12 with the Win32 LCD transfer and GUI startup fixes;
-app startup, keyboard connection, and preview preparation were checked on this PC.
+It was rebuilt on 2026-09-16 with Cursor onboarding/Admin API, Codex thread
+scanning, partial-month estimates, and 4 ms F108 firmware timing. The packaged
+CLI and a four-account × five-second Preview render were checked; physical LCD
+timing still needs one confirmation on the connected keyboard.
 To build your own copy, follow the source instructions below and use `QuotaDeck.spec`.
 
 1. Connect the F108 Pro over **USB-C** and press `Fn+4`.
@@ -234,27 +254,33 @@ In the settings app:
 - **Comparison period** — in cumulative mode, choose **Daily** (today / prior
   completed-day average) or **Monthly** (month-to-date / prior completed-month
   average).
-- **Cost currency** — choose **KRW (10,000 won)** or **USD**. KRW uses the
-  editable manual exchange rate, which defaults to 1,400 KRW/USD and is never
-  fetched live. The KRW K/M/B scale legend is shown directly in settings.
+- **Cost currency** — choose **KRW (10,000 won)** or **USD**. KRW defaults to
+  **Auto FX**: official U.S. Treasury quarterly reporting rate (not a realtime
+  spot quote), then cache, then the 1,400 KRW/USD manual fallback. Source,
+  as-of, and errors are on the exchange-icon hover. The KRW K/M/B scale legend
+  is also on hover.
+- **Cursor source menu** — personal users follow the onboarding dialog to the
+  Analytics dashboard and select the downloaded Usage CSV. Enterprise admins
+  can validate an Admin API key from the same menu. Keys never enter config or
+  logs.
 - **Detect** — rescan CLI/app logins on this PC.
 - Checkboxes — only checked accounts rotate on the LCD. The alias is what the HUD shows.
 - **Preview** — the selected remaining/cumulative HUD without writing flash.
   Every account rotates for the configured time per account.
 - **Upload now** — write the selected accounts to the F108 Pro **user GIF slot**. Buttons lock while the transfer is running.
 
-The current settings schema is **config v5**. It persists
-`cumulative_period`, `cost_currency`, and `usd_to_krw_rate`; older settings are
-migrated safely, with Monthly, KRW, and 1,400 KRW/USD used when those fields are
-missing.
+The current settings schema is **config v7**. It persists period, currency, FX,
+and Cursor CSV/Admin binding metadata but never the API key. Older settings
+migrate safely to Monthly, KRW, Auto FX, the 1,400 KRW/USD fallback, and the
+48-frame default budget.
 
 Default timings are **60 seconds / 5 seconds / 10 minutes**. They are not the same clock.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
 | **Usage poll** | 60 s | How often this PC re-reads provider APIs or local history. This count is not the flash-write count. |
-| **Time per account** | 5 s | Total full-screen time, including character animation. Configurable in the app. |
-| **Keyboard write** | 10 min | Minimum interval before rewriting onboard storage. |
+| **Time per account** | 5 s | Total full-screen time, including character animation. N accounts take about N×5 seconds; dwell is not multiplied again. |
+| **Keyboard write** | 10 min | Minimum interval before rewriting onboard storage. Daily estimates assume 16 active hours (10 min ≈ 96, 7 min ≈ 138), distinct from the safety cap. |
 
 New settings, or settings without the field, default to 5 seconds. Upgrades
 preserve an existing `scene_hold_seconds` value from 2–20 seconds, so change an
@@ -340,6 +366,7 @@ limited to 100 actual writes/day by default).
 - Write the user GIF slot (`image_number = 1`). Slot 0 is the factory GIF.
 - USB-C wired mode only (`Fn+4`).
 - Do not write flash faster than needed. The default is 10 minutes. Faster intervals reduce lifespan.
+- Never disable TLS verification. If a corporate proxy or self-signed CA blocks Cursor usage APIs, install the CA in the OS trust store or set `QUOTADECK_CA_BUNDLE` (or `SSL_CERT_FILE`) to a PEM bundle. Login vs usage-fetch failures are distinguished on the lock/status hover.
 
 ## More
 

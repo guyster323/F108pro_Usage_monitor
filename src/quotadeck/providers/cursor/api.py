@@ -9,6 +9,13 @@ from quotadeck.core.mask import email_local
 from quotadeck.core.models import UsageSnapshot, UsageWindow
 from quotadeck.http import get, post
 from quotadeck.providers.cursor.statedb import CursorAuth
+from quotadeck.providers.errors import (
+    FetchFailureKind,
+    UsageFetchError,
+    classify_exception,
+    combine_attempts,
+    dominant_kind,
+)
 
 USAGE_SUMMARY = "https://cursor.com/api/usage-summary"
 PERIOD_USAGE = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
@@ -136,26 +143,51 @@ def parse_period_usage(data: dict, auth: CursorAuth) -> UsageSnapshot:
 def session_cookie(auth: CursorAuth) -> str:
     return f"WorkosCursorSessionToken={auth.user_id}%3A%3A{auth.access_token}"
 
+def _http_attempt(name: str, response: httpx.Response) -> tuple[FetchFailureKind, str]:
+    if response.status_code in {401, 403}:
+        return FetchFailureKind.UNAUTHORIZED, f"{name} HTTP {response.status_code}"
+    return FetchFailureKind.HTTP, f"{name} HTTP {response.status_code}"
+
+
 def fetch_cursor(auth: CursorAuth, timeout: float = 20.0) -> UsageSnapshot:
     headers = {
         "Cookie": session_cookie(auth),
         "Accept": "application/json",
         "User-Agent": "QuotaDeck",
     }
+    attempts: list[str] = []
+    kinds: list[FetchFailureKind] = []
     try:
         response = get(USAGE_SUMMARY, headers=headers, timeout=timeout)
         if response.status_code < 400:
             return parse_usage_summary(response.json(), auth)
-    except httpx.HTTPError:
-        pass
+        kind, detail = _http_attempt("usage-summary", response)
+        attempts.append(detail)
+        kinds.append(kind)
+    except httpx.HTTPError as exc:
+        kind = classify_exception(exc)
+        attempts.append(f"usage-summary {kind.value}")
+        kinds.append(kind)
     rpc_headers = {
         "Authorization": f"Bearer {auth.access_token}",
         "Content-Type": "application/json",
         "Connect-Protocol-Version": "1",
         "User-Agent": "QuotaDeck",
     }
-    response = post(PERIOD_USAGE, headers=rpc_headers, json={}, timeout=timeout)
-    if response.status_code in {401, 403}:
-        raise RuntimeError("cursor unauthorized — sign in again in Cursor")
-    response.raise_for_status()
-    return parse_period_usage(response.json(), auth)
+    try:
+        response = post(PERIOD_USAGE, headers=rpc_headers, json={}, timeout=timeout)
+        if response.status_code < 400:
+            return parse_period_usage(response.json(), auth)
+        kind, detail = _http_attempt("GetCurrentPeriodUsage", response)
+        attempts.append(detail)
+        kinds.append(kind)
+    except httpx.HTTPError as exc:
+        kind = classify_exception(exc)
+        attempts.append(f"GetCurrentPeriodUsage {kind.value}")
+        kinds.append(kind)
+    final_kind = dominant_kind(kinds)
+    raise UsageFetchError(
+        combine_attempts(attempts, kind=final_kind),
+        kind=final_kind,
+        attempts=attempts,
+    )

@@ -8,11 +8,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from quotadeck.core.models import AccountRef, DisplayMode, MetricMode
+from quotadeck.devices.aula_f108.constants import (
+    LCD_DEFAULT_BUDGET,
+    LCD_MAX_FRAMES,
+    LCD_SOFT_CAP,
+    LEGACY_HIDDEN_FRAME_BUDGET,
+)
 
 if TYPE_CHECKING:
     from quotadeck.usage.models import CostCurrency, UsagePeriod
 
-CONFIG_VERSION = 5
+CONFIG_VERSION = 7
 DEFAULT_SCENE_HOLD_SECONDS = 5
 MIN_UPLOAD_MINUTES = 1
 MAX_UPLOAD_MINUTES = 120
@@ -42,6 +48,34 @@ def clamp_usd_to_krw_rate(value: object) -> float:
     if not isfinite(parsed):
         parsed = DEFAULT_USD_TO_KRW_RATE
     return max(MIN_USD_TO_KRW_RATE, min(MAX_USD_TO_KRW_RATE, parsed))
+
+
+def clamp_frame_budget(value: object) -> int:
+    """Keep the hidden playlist budget inside the soft cap and hard limit."""
+
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        parsed = LCD_DEFAULT_BUDGET
+    return max(1, min(parsed, LCD_SOFT_CAP, LCD_MAX_FRAMES))
+
+
+def _frame_budget(raw: dict) -> int:
+    stored_version = 0
+    if "config_version" in raw:
+        try:
+            stored_version = int(raw.get("config_version") or 0)
+        except (TypeError, ValueError, OverflowError):
+            stored_version = 0
+    if "frame_budget" not in raw:
+        return LCD_DEFAULT_BUDGET
+    try:
+        parsed = int(raw.get("frame_budget"))
+    except (TypeError, ValueError, OverflowError):
+        return LCD_DEFAULT_BUDGET
+    if stored_version < 7 and parsed == LEGACY_HIDDEN_FRAME_BUDGET:
+        return LCD_DEFAULT_BUDGET
+    return clamp_frame_budget(parsed)
 
 
 def _default_cumulative_period() -> UsagePeriod:
@@ -141,6 +175,28 @@ class AccountConfig:
     source_kind: str = "cli"
     source_label: str = ""
 
+
+@dataclass
+class CursorUsageBinding:
+    """Config-backed Cursor cumulative source. Never stores an API key."""
+
+    account_id: str
+    source: str = ""
+    csv_path: str = ""
+    imported_at: str = ""
+    admin_email: str = ""
+    admin_user_id: str = ""
+
+    def __post_init__(self) -> None:
+        self.account_id = str(self.account_id or "").strip()
+        source = str(self.source or "").strip().casefold()
+        self.source = source if source in {"csv", "admin_api"} else ""
+        self.csv_path = str(self.csv_path or "").strip()
+        self.imported_at = str(self.imported_at or "").strip()
+        self.admin_email = str(self.admin_email or "").strip()
+        self.admin_user_id = str(self.admin_user_id or "").strip()
+
+
 @dataclass
 class AppConfig:
     accounts: list[AccountConfig] = field(default_factory=list)
@@ -149,6 +205,7 @@ class AppConfig:
     cumulative_period: UsagePeriod = field(default_factory=_default_cumulative_period)
     cost_currency: CostCurrency = field(default_factory=_default_cost_currency)
     usd_to_krw_rate: float = DEFAULT_USD_TO_KRW_RATE
+    fx_auto: bool = True
     theme: str = "quotadeck-crew"
     poll_seconds: int = 60
     scene_hold_seconds: int = DEFAULT_SCENE_HOLD_SECONDS
@@ -156,15 +213,17 @@ class AppConfig:
     ui_language: str = "ko"
     max_age_minutes: int = 60
     daily_flash_limit: int = 100
-    frame_budget: int = 32
+    frame_budget: int = LCD_DEFAULT_BUDGET
     launch_at_startup: bool = False
     config_version: int = CONFIG_VERSION
+    cursor_bindings: list[CursorUsageBinding] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.cumulative_period = _cumulative_period(self.cumulative_period)
         self.cost_currency = _cost_currency(self.cost_currency)
         self.min_upload_minutes = clamp_min_upload_minutes(self.min_upload_minutes)
         self.usd_to_krw_rate = clamp_usd_to_krw_rate(self.usd_to_krw_rate)
+        self.frame_budget = clamp_frame_budget(self.frame_budget)
 
     def enabled_keys(self) -> list[str]:
         return [f"{a.provider}:{a.account_id}" for a in self.accounts if a.enabled]
@@ -174,6 +233,27 @@ class AppConfig:
             if item.provider == provider and item.account_id == account_id and item.alias:
                 return item.alias
         return fallback
+
+    def cursor_binding(self, account_id: str) -> CursorUsageBinding | None:
+        wanted = account_id.strip().casefold()
+        if not wanted:
+            return None
+        for item in self.cursor_bindings:
+            if item.account_id.casefold() == wanted:
+                return item
+        return None
+
+    def active_cursor_source(self, account_id: str) -> str:
+        binding = self.cursor_binding(account_id)
+        if binding is None:
+            return ""
+        if binding.source == "admin_api":
+            return "admin_api"
+        if binding.source == "csv" and binding.csv_path:
+            return "csv"
+        if binding.csv_path:
+            return "csv"
+        return ""
 
 def account_config_from_ref(
     account: AccountRef,
@@ -203,6 +283,64 @@ def _hold_seconds(raw: dict) -> int:
 def _account_from_dict(raw_account: dict) -> AccountConfig:
     allowed = {field.name for field in fields(AccountConfig)}
     return AccountConfig(**{key: value for key, value in raw_account.items() if key in allowed})
+
+
+def _cursor_binding_from_dict(raw: object) -> CursorUsageBinding | None:
+    if not isinstance(raw, dict):
+        return None
+    allowed = {item.name for item in fields(CursorUsageBinding)}
+    binding = CursorUsageBinding(
+        **{key: value for key, value in raw.items() if key in allowed and key != "account_id"},
+        account_id=str(raw.get("account_id") or ""),
+    )
+    return binding if binding.account_id else None
+
+
+def _cursor_bindings_from_raw(raw: object) -> list[CursorUsageBinding]:
+    if not isinstance(raw, list):
+        return []
+    bindings: list[CursorUsageBinding] = []
+    seen: set[str] = set()
+    for item in raw:
+        binding = _cursor_binding_from_dict(item)
+        if binding is None:
+            continue
+        key = binding.account_id.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        bindings.append(binding)
+    return bindings
+
+
+def upsert_cursor_binding(config: AppConfig, binding: CursorUsageBinding) -> AppConfig:
+    if not binding.account_id:
+        return config
+    config.cursor_bindings = [
+        item
+        for item in config.cursor_bindings
+        if item.account_id.casefold() != binding.account_id.casefold()
+    ]
+    if binding.source or binding.csv_path:
+        config.cursor_bindings.append(binding)
+    return config
+
+
+def remove_cursor_binding(config: AppConfig, account_id: str) -> AppConfig:
+    wanted = account_id.strip().casefold()
+    config.cursor_bindings = [
+        item for item in config.cursor_bindings if item.account_id.casefold() != wanted
+    ]
+    return config
+
+
+def has_admin_cursor_binding(config: AppConfig, *, excluding: str = "") -> bool:
+    skip = excluding.strip().casefold()
+    return any(
+        item.source == "admin_api"
+        and (not skip or item.account_id.casefold() != skip)
+        for item in config.cursor_bindings
+    )
 
 
 def _display_mode(value: object) -> DisplayMode:
@@ -261,16 +399,18 @@ def load_config(path: Path | None = None) -> AppConfig:
         usd_to_krw_rate=clamp_usd_to_krw_rate(
             raw.get("usd_to_krw_rate", DEFAULT_USD_TO_KRW_RATE)
         ),
+        fx_auto=True if "fx_auto" not in raw else bool(raw.get("fx_auto")),
         theme=raw.get("theme", "quotadeck-crew"),
         poll_seconds=int(raw.get("poll_seconds", 60)),
         scene_hold_seconds=_hold_seconds(raw),
         min_upload_minutes=clamp_min_upload_minutes(raw.get("min_upload_minutes", 10)),
         max_age_minutes=int(raw.get("max_age_minutes", 60)),
         daily_flash_limit=int(raw.get("daily_flash_limit", 100)),
-        frame_budget=int(raw.get("frame_budget", 32)),
+        frame_budget=_frame_budget(raw),
         launch_at_startup=bool(raw.get("launch_at_startup", False)),
         ui_language="en" if raw.get("ui_language") == "en" else "ko",
         config_version=CONFIG_VERSION,
+        cursor_bindings=_cursor_bindings_from_raw(raw.get("cursor_bindings")),
     )
 
 def save_config(config: AppConfig, path: Path | None = None) -> Path:
@@ -281,6 +421,7 @@ def save_config(config: AppConfig, path: Path | None = None) -> Path:
     payload["cumulative_period"] = config.cumulative_period.value
     payload["cost_currency"] = config.cost_currency.value
     payload["usd_to_krw_rate"] = clamp_usd_to_krw_rate(config.usd_to_krw_rate)
+    payload["fx_auto"] = bool(config.fx_auto)
     payload["config_version"] = CONFIG_VERSION
     target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return target

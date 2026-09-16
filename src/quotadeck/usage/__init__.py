@@ -11,7 +11,7 @@ from quotadeck.usage.collectors import (
     CollectorSettings,
     validate_daily_totals,
 )
-from quotadeck.usage.cursor_export import collect_cursor_export
+from quotadeck.usage.cursor_export import collect_cursor_export, collect_cursor_usage
 from quotadeck.usage.local import scan_claude_usage, scan_codex_usage
 from quotadeck.usage.token_stats import collect_token_stats, parse_token_stats_payload
 from quotadeck.usage.grok import (
@@ -102,6 +102,7 @@ __all__ = [
     "build_usage_report",
     "collect_ccusage",
     "collect_cursor_export",
+    "collect_cursor_usage",
     "collect_normalized_usage",
     "collect_token_stats",
     "parse_ccusage_payload",

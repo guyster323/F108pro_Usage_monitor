@@ -6,6 +6,7 @@ from math import isfinite
 from PIL import Image
 
 from quotadeck.devices.aula_f108.constants import (
+    FIRMWARE_DELAY_TICK_MS,
     LCD_FRAME_BYTES,
     LCD_HEADER_BYTES,
     LCD_HEIGHT,
@@ -13,6 +14,7 @@ from quotadeck.devices.aula_f108.constants import (
     LCD_MAX_FRAMES,
     LCD_PAGE_BYTES,
     LCD_WIDTH,
+    LOGICAL_DELAY_TICK_MS,
 )
 
 
@@ -30,16 +32,40 @@ def rgb888_to_rgb565(r: int, g: int, b: int) -> int:
 
 
 def delay_byte(delay_ms: int) -> int:
-    # Keyboard stores delay directly in 20 ms units, min 1, max 255.
-    return max(1, min(255, quantize_delay_ms(delay_ms) // 20))
+    """Encode a logical millisecond duration as one firmware delay byte.
+
+    ``Frame.delay_ms`` stays in GUI/GIF milliseconds. The LCD interprets the
+    stored byte as ``FIRMWARE_DELAY_TICK_MS`` (4 ms), not 20 ms.
+    """
+    return max(1, min(255, quantize_delay_ms(delay_ms) // FIRMWARE_DELAY_TICK_MS))
+
+
+def firmware_duration_ms(delay_ms: int) -> int:
+    """Hardware playback for one logical frame delay."""
+    return delay_byte(delay_ms) * FIRMWARE_DELAY_TICK_MS
+
+
+def payload_duration_ms(payload: bytes) -> int:
+    """Sum of firmware-decoded frame delays declared by a serialized header."""
+    if not payload:
+        raise PayloadError("payload is empty")
+    frame_count = payload[0]
+    if not 1 <= frame_count <= LCD_MAX_FRAMES:
+        raise PayloadError(
+            f"payload declares {frame_count} frames; expected 1..{LCD_MAX_FRAMES}"
+        )
+    if len(payload) < 1 + frame_count:
+        raise PayloadError("payload header is shorter than the declared frame count")
+    return sum(payload[1 : 1 + frame_count]) * FIRMWARE_DELAY_TICK_MS
 
 
 def quantize_delay_ms(delay_ms: int | float) -> int:
-    """Round a finite duration to the nearest firmware tick (ties round up)."""
+    """Round a finite duration to the nearest logical/GIF tick (ties round up)."""
     value = float(delay_ms)
     if not isfinite(value):
         raise PayloadError(f"invalid frame delay {delay_ms!r}")
-    return max(20, int((value + 10.0) // 20.0) * 20)
+    tick = LOGICAL_DELAY_TICK_MS
+    return max(tick, int((value + tick / 2) // tick) * tick)
 
 def validate_frames(frames: list[Frame]) -> None:
     if not frames:
@@ -55,13 +81,15 @@ def validate_frames(frames: list[Frame]) -> None:
             raise PayloadError(
                 f"frame {i} is {w}x{h}; expected {LCD_WIDTH}x{LCD_HEIGHT}"
             )
-        if frame.delay_ms < 20 or frame.delay_ms > LCD_MAX_DELAY_MS:
+        if frame.delay_ms < LOGICAL_DELAY_TICK_MS or frame.delay_ms > LCD_MAX_DELAY_MS:
             raise PayloadError(
-                f"frame {i} delay is {frame.delay_ms} ms; expected 20..{LCD_MAX_DELAY_MS} ms"
+                f"frame {i} delay is {frame.delay_ms} ms; expected "
+                f"{LOGICAL_DELAY_TICK_MS}..{LCD_MAX_DELAY_MS} ms"
             )
         if quantize_delay_ms(frame.delay_ms) != frame.delay_ms:
             raise PayloadError(
-                f"frame {i} delay is {frame.delay_ms} ms; expected an exact 20 ms tick"
+                f"frame {i} delay is {frame.delay_ms} ms; expected an exact "
+                f"{LOGICAL_DELAY_TICK_MS} ms logical/GIF tick"
             )
 
 
