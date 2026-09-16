@@ -55,6 +55,11 @@ def test_metric_selector_persists_independently_from_account_order() -> None:
     assert window.krw_unit_hint.isHidden()
     assert window.krw_unit_hint.text() == "1K = 천만원 · 1M = 백억 · 1B = 10조"
     assert window.fx_auto.isChecked()
+    assert window.exchange_rate.isHidden()
+    window.fx_auto.setChecked(False)
+    assert not window.exchange_rate.isHidden()
+    window.fx_auto.setChecked(True)
+    assert window.exchange_rate.isHidden()
     assert config.fx_auto is True
     config = window.collect_config()
     assert config.cost_currency is CostCurrency.KRW
@@ -90,6 +95,7 @@ def test_period_and_currency_labels_survive_language_refresh() -> None:
     assert window.currency.currentData() == CostCurrency.KRW.value
     assert window.currency.currentText() == "KRW (10,000 won)"
     assert window.exchange_rate.value() == 1490
+    assert window.exchange_rate.isHidden()
     assert window.krw_unit_hint.text() == (
         "1K = 10 million won · 1M = 10 billion won · 1B = 10 trillion won"
     )
@@ -122,7 +128,7 @@ def test_v4_config_migrates_period_currency_and_manual_rate(tmp_path) -> None:
     config.usd_to_krw_rate = float("inf")
     save_config(config, path)
     saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved["config_version"] == CONFIG_VERSION == 5
+    assert saved["config_version"] == CONFIG_VERSION == 7
     assert saved["cumulative_period"] == "monthly"
     assert saved["cost_currency"] == "krw"
     assert saved["usd_to_krw_rate"] == 1400.0

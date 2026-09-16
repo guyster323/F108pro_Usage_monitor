@@ -228,6 +228,41 @@ def test_automatic_refresh_uses_non_forced_worker_when_keyboard_is_ready(
     assert app is not None
 
 
+def test_upload_worker_builds_initial_preview_when_flash_write_is_deferred() -> None:
+    from types import SimpleNamespace
+
+    from PySide6.QtWidgets import QApplication
+
+    from quotadeck.app.main_window import Worker
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.state = SimpleNamespace(
+                last_frames=[],
+                last_polled=["fresh-snapshot"],
+            )
+
+        def tick(self, *, force: bool) -> str:
+            assert not force
+            return "deferred: cooldown 120s"
+
+        def build_frames(self, snapshots):
+            assert snapshots == ["fresh-snapshot"]
+            return ["preview-frame"]
+
+    app = QApplication.instance() or QApplication([])
+    runtime = Runtime()
+    messages: list[str] = []
+    worker = Worker(runtime, force=False)
+    worker.done.connect(messages.append)
+
+    worker.run()
+
+    assert runtime.state.last_frames == ["preview-frame"]
+    assert messages == ["deferred: cooldown 120s"]
+    assert app is not None
+
+
 def test_apply_reuses_identical_runtime(monkeypatch) -> None:
     from PySide6.QtWidgets import QApplication
 
@@ -508,4 +543,347 @@ def test_lock_hover_distinguishes_offline_stale_and_tls_usage_error() -> None:
     assert "signed in" in usage
     assert "not signed in" not in usage
     window.close()
+    assert app is not None
+
+
+def test_cursor_row_uses_compact_source_menu_with_tooltips() -> None:
+    from PySide6.QtWidgets import QApplication
+
+    from quotadeck.app.main_window import AccountRow
+    from quotadeck.config import AccountConfig
+
+    app = QApplication.instance() or QApplication([])
+    row = AccountRow(AccountConfig("cursor", "work", "WORK"))
+    row.apply_language("en", source="")
+    assert not row.actions_btn.isHidden()
+    assert row.actions_btn.maximumWidth() <= 88
+    assert row.actions_btn.focusPolicy().name == "StrongFocus"
+    assert row.actions_btn.accessibleName()
+    assert row.actions_btn.toolTip()
+    labels = [action.text() for action in row.actions_menu.actions()]
+    assert any("CSV" in text for text in labels)
+    assert any("Enterprise API" in text or "Admin" in text for text in labels)
+    assert not hasattr(row, "connect_btn")
+    row.apply_language("en", source="csv")
+    assert row.actions_btn.text() == "CSV"
+    assert "CSV" in row.actions_btn.toolTip()
+    labels = [action.text() for action in row.actions_menu.actions()]
+    assert "Disconnect" in labels
+    assert any("Admin" in text or "Enterprise" in text for text in labels)
+    row.apply_language("ko", source="admin_api")
+    assert row.actions_btn.text() == "API"
+    assert row.actions_btn.toolTip()
+    assert app is not None
+
+
+def test_hold_cycle_counts_visible_cumulative_accounts_only() -> None:
+    from PySide6.QtWidgets import QApplication
+
+    from quotadeck.app.main_window import MainWindow
+    from quotadeck.config import AccountConfig, AppConfig
+    from quotadeck.core.models import MetricMode
+    from quotadeck.usage.display import CumulativeSnapshot
+    from quotadeck.usage.models import UsagePeriod
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(live=False)
+    window.config = AppConfig(
+        accounts=[AccountConfig("cursor", "work", "CUR", True)],
+        metric_mode=MetricMode.CUMULATIVE,
+        scene_hold_seconds=5,
+    )
+    window.reload_accounts()
+    index = window.metric_combo.findData("cumulative")
+    window.metric_combo.setCurrentIndex(index if index >= 0 else 1)
+    period = str(window.period.currentData() or window.config.cumulative_period.value)
+    window.runtime.state.last_cumulative[("cursor:work", period)] = (
+        CumulativeSnapshot.unsupported(
+            provider="cursor",
+            account_id="work",
+            display_name="CUR",
+            period=UsagePeriod(period) if period in {"daily", "monthly"} else UsagePeriod.MONTHLY,
+        )
+    )
+    window.update_hold_cycle()
+    assert window._lcd_enabled_count() == 0
+    assert "0" in window.hold_cycle.text()
+    window.close()
+    assert app is not None
+
+
+def test_admin_connect_queues_one_cache_preview_without_second_live_fetch(
+    monkeypatch,
+) -> None:
+    from PySide6.QtCore import QThread
+    from PySide6.QtWidgets import QApplication
+
+    import quotadeck.app.main_window as main_window
+    from quotadeck.config import AccountConfig, AppConfig, CursorUsageBinding
+    from quotadeck.core.models import MetricMode
+
+    app = QApplication.instance() or QApplication([])
+    window = main_window.MainWindow(live=False)
+    window.config = AppConfig(
+        accounts=[AccountConfig("cursor", "work", "CUR", True)],
+        metric_mode=MetricMode.CUMULATIVE,
+    )
+    window.reload_accounts()
+    monkeypatch.setattr(main_window, "save_config", lambda _config: None)
+    started: list[str] = []
+    monkeypatch.setattr(
+        window,
+        "_start_thread",
+        lambda worker, kind: started.append(kind),
+    )
+    admin_calls = {"n": 0}
+
+    def boom_collect(*_args, **_kwargs):
+        admin_calls["n"] += 1
+        raise AssertionError("queued preview must reuse the Admin cache")
+
+    monkeypatch.setattr(
+        "quotadeck.usage.cursor_admin.collect_cursor_admin",
+        boom_collect,
+    )
+
+    force_flags: list[bool] = []
+    original_refresh = window._refresh_cursor_runtime
+
+    def spy_refresh(*, force_admin: bool = False) -> None:
+        force_flags.append(force_admin)
+        original_refresh(force_admin=force_admin)
+
+    window._refresh_cursor_runtime = spy_refresh  # type: ignore[method-assign]
+
+    placeholder = QThread(window)
+    window.admin_worker = placeholder
+    window._active_threads.add(placeholder)
+    window.set_busy(True)
+    window._live = True
+
+    window._on_cursor_admin_validated("work", "dev@company.com")
+
+    binding = window.config.cursor_binding("work")
+    assert binding is not None
+    assert isinstance(binding, CursorUsageBinding)
+    assert binding.source == "admin_api"
+    assert binding.admin_email == "dev@company.com"
+    assert window._display_refresh_pending is True
+    assert started == []
+    assert force_flags == [False]
+    assert admin_calls["n"] == 0
+
+    window._finish_thread(placeholder, "cursor-admin-connect")
+    assert window._busy is False
+    assert window.admin_worker is None
+    from PySide6.QtCore import QElapsedTimer
+
+    waited = QElapsedTimer()
+    waited.start()
+    while started == [] and waited.elapsed() < 500:
+        app.processEvents()
+    assert started == ["display-refresh"]
+    assert window._display_refresh_pending is False
+    assert admin_calls["n"] == 0
+    assert force_flags == [False]
+
+    recorded: list[bool] = []
+    window._refresh_cursor_runtime = (  # type: ignore[method-assign]
+        lambda *, force_admin=False: recorded.append(force_admin)
+    )
+    cursor_row = next(row for row in window.rows if row.account.provider == "cursor")
+    cursor_row.apply_language("en", source="admin_api")
+    cursor_row.update_admin.emit()
+    assert recorded == [False]
+
+    window.set_busy(False)
+    window._live = False
+    window.close()
+    assert app is not None
+
+
+def test_cursor_csv_guide_cancel_does_not_open_picker_or_mutate(monkeypatch) -> None:
+    from PySide6.QtWidgets import QApplication, QFileDialog
+
+    from quotadeck.app.main_window import MainWindow
+    from quotadeck.config import AccountConfig, AppConfig
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(live=False)
+    window.config = AppConfig(
+        accounts=[AccountConfig("cursor", "work", "WORK", True)]
+    )
+    window.reload_accounts()
+    before = window.collect_config()
+    opened: list[str] = []
+    monkeypatch.setattr(window, "_confirm_cursor_csv_guide", lambda: False)
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: opened.append("picker") or ("", ""),
+    )
+    window._import_cursor_csv("work")
+    assert opened == []
+    after = window.collect_config()
+    assert [item.account_id for item in after.accounts] == [
+        item.account_id for item in before.accounts
+    ]
+    assert after.cursor_bindings == before.cursor_bindings
+    window.close()
+    assert app is not None
+
+
+def test_cursor_csv_guide_continue_reaches_picker_and_cancel_stays_clean(
+    monkeypatch,
+) -> None:
+    from PySide6.QtWidgets import QApplication, QFileDialog
+
+    from quotadeck.app.main_window import MainWindow
+    from quotadeck.config import AccountConfig, AppConfig
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(live=False)
+    window.config = AppConfig(
+        accounts=[AccountConfig("cursor", "work", "WORK", True)]
+    )
+    window.reload_accounts()
+    before = window.collect_config()
+    opened: list[str] = []
+    monkeypatch.setattr(window, "_confirm_cursor_csv_guide", lambda: True)
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: opened.append("picker") or ("", ""),
+    )
+    window._import_cursor_csv("work")
+    assert opened == ["picker"]
+    after = window.collect_config()
+    assert after.cursor_bindings == before.cursor_bindings
+    window.close()
+    assert app is not None
+
+
+def test_cursor_admin_guide_cancel_does_not_prompt_or_mutate(monkeypatch) -> None:
+    from PySide6.QtWidgets import QApplication, QInputDialog
+
+    from quotadeck.app.main_window import MainWindow
+    from quotadeck.config import AccountConfig, AppConfig
+
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(live=False)
+    window.config = AppConfig(
+        accounts=[AccountConfig("cursor", "work", "WORK", True)]
+    )
+    window.reload_accounts()
+    before = window.collect_config()
+    prompted: list[str] = []
+    monkeypatch.setattr(window, "_confirm_cursor_admin_guide", lambda: False)
+    monkeypatch.setattr(
+        QInputDialog,
+        "getText",
+        lambda *args, **kwargs: prompted.append("key") or ("secret", True),
+    )
+    window._connect_cursor_admin("work")
+    assert prompted == []
+    after = window.collect_config()
+    assert after.cursor_bindings == before.cursor_bindings
+    window.close()
+    assert app is not None
+
+
+def test_cursor_guide_dialogs_expose_official_links_and_accessible_buttons(
+    monkeypatch,
+) -> None:
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
+    import quotadeck.app.main_window as main_window
+
+    app = QApplication.instance() or QApplication([])
+    opened: list[str] = []
+    monkeypatch.setattr(
+        main_window,
+        "open_official_url",
+        lambda url: opened.append(url) or True,
+    )
+
+    clicks = {"n": 0}
+
+    class _ScriptedBox(QMessageBox):
+        def exec(self) -> int:  # noqa: A003
+            clicks["n"] += 1
+            if clicks["n"] == 1:
+                link = next(
+                    button
+                    for button in self.buttons()
+                    if "Analytics" in button.text() or "대시보드" in button.text()
+                )
+                assert link.accessibleName()
+                self._clicked = link
+            else:
+                cancel = next(
+                    button
+                    for button in self.buttons()
+                    if button.text() in {"Cancel", "취소"}
+                )
+                assert cancel.accessibleName()
+                self._clicked = cancel
+            return 0
+
+        def clickedButton(self):  # noqa: N802
+            return self._clicked
+
+    monkeypatch.setattr(main_window, "QMessageBox", _ScriptedBox)
+    assert main_window.show_cursor_guide_dialog(
+        None,
+        "en",
+        title_key="cursor_csv_guide_title",
+        body_key="cursor_csv_guide_body",
+        links=(("cursor_csv_guide_open", main_window.CURSOR_ANALYTICS_URL),),
+        continue_key="cursor_csv_guide_continue",
+        cancel_key="cursor_csv_guide_cancel",
+    ) is False
+    assert opened == [main_window.CURSOR_ANALYTICS_URL]
+    assert "cursor.com/dashboard/analytics" in opened[0]
+
+    clicks["n"] = 0
+    opened.clear()
+
+    class _AdminBox(_ScriptedBox):
+        def exec(self) -> int:  # noqa: A003
+            clicks["n"] += 1
+            labels = [button.text() for button in self.buttons()]
+            assert any("API docs" in text or "API 문서" in text for text in labels)
+            assert any("Admin API" in text for text in labels)
+            if clicks["n"] == 1:
+                link = next(button for button in self.buttons() if "Admin API" in button.text())
+                assert link.accessibleName()
+                self._clicked = link
+            elif clicks["n"] == 2:
+                link = next(
+                    button
+                    for button in self.buttons()
+                    if "API docs" in button.text() or button.text() == "API 문서 열기"
+                )
+                self._clicked = link
+            else:
+                self._clicked = next(
+                    button for button in self.buttons() if button.text() in {"Cancel", "취소"}
+                )
+            return 0
+
+    monkeypatch.setattr(main_window, "QMessageBox", _AdminBox)
+    assert main_window.show_cursor_guide_dialog(
+        None,
+        "en",
+        title_key="cursor_admin_guide_title",
+        body_key="cursor_admin_guide_body",
+        links=(
+            ("cursor_admin_guide_open_api", main_window.CURSOR_API_DOCS_URL),
+            ("cursor_admin_guide_open_admin", main_window.CURSOR_ADMIN_API_DOCS_URL),
+        ),
+        continue_key="cursor_admin_guide_continue",
+        cancel_key="cursor_admin_guide_cancel",
+    ) is False
+    assert main_window.CURSOR_ADMIN_API_DOCS_URL in opened
+    assert main_window.CURSOR_API_DOCS_URL in opened
     assert app is not None

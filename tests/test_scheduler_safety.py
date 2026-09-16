@@ -170,6 +170,16 @@ def test_quota_hash_includes_frame_budget() -> None:
     ) != render_hash(
         [snapshot], severities, theme="crew", mode="smart", frame_budget=8
     )
+    assert render_hash(
+        [snapshot], severities, theme="crew", mode="smart"
+    ) != render_hash(
+        [snapshot], severities, theme="crew", mode="smart", frame_budget=32
+    )
+    assert render_hash(
+        [snapshot], severities, theme="crew", mode="smart"
+    ) == render_hash(
+        [snapshot], severities, theme="crew", mode="smart", frame_budget=48
+    )
 
 
 def test_render_hash_normalizes_mixed_naive_and_aware_resets() -> None:

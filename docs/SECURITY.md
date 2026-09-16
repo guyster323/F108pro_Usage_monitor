@@ -15,8 +15,14 @@ QuotaDeck is not a password manager.
   dump Python locals or credential values, but stack frames can contain local
   file paths; review this file before sharing it outside your support channel.
 - Read `state.vscdb` from a temporary copy, then delete the copy.
-- `config.json` stores aliases and provider account IDs, but no access tokens or
-  cookies. Treat it as private local data and never include it with shared logs.
+- `config.json` stores aliases, provider account IDs, and Cursor CSV/Admin
+  binding metadata, but no access tokens, cookies, or Admin API keys. Treat
+  it as private local data and never include it with shared logs.
+- An optional Cursor Team Admin API key is stored only in Windows Credential
+  Manager (`QuotaDeck/CursorAdminAPI`) or an injected test store. It is never
+  written to config, the last-known-good usage cache, or diagnostic logs.
+  Raw Admin API response bodies are not logged. Disconnecting the last
+  Admin-bound account deletes that key; CSV-only disconnect does not.
 - The LCD never shows a full email address by default.
 
 ## Cumulative local-history privacy
@@ -70,11 +76,15 @@ observations, not account audits or invoices. Even when the analyzer has a full
 365-day retained span, that proves neither continuous coverage nor measured
 usage for every day; the LCD intentionally shows only the selected period.
 
-Cursor account totals require an administrator ledger that QuotaDeck 0.2 does
-not request. Grok external OTel is opt-in, begins only after configuration, and
-is stored under the user's collector policy; the default runtime does not
-silently enable or backfill it. See
-[CUMULATIVE_USAGE.md](CUMULATIVE_USAGE.md) for the complete support and pricing
-limits.
+Cursor account totals still require an administrator ledger or an attributable
+export. The optional Admin API path never invents personal usage from
+`state.vscdb`, never attaches team-wide events to another user, and never
+turns a successful empty current-user result into a measured zero. A later
+valid-empty page keeps any non-empty last-known-good cache and marks it stale.
+Auth or network failures do not persist a candidate Admin key. Grok
+external OTel is opt-in, begins only after configuration, and is stored under
+the user's collector policy; the default runtime does not silently enable or
+backfill it. See [CUMULATIVE_USAGE.md](CUMULATIVE_USAGE.md) for the complete
+support and pricing limits.
 
 See [TRAY_DIAGNOSTICS.md](TRAY_DIAGNOSTICS.md) for log retrieval and event meanings.

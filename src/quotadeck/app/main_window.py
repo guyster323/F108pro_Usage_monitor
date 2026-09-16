@@ -6,24 +6,28 @@ import time
 from datetime import timedelta
 
 from PySide6.QtCore import QSize, QThread, QTimer, Qt, QUrl, Signal, Slot, qVersion
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QSystemTrayIcon,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -49,9 +53,11 @@ from quotadeck.config import (
     MIN_USD_TO_KRW_RATE,
     AccountConfig,
     AppConfig,
+    CursorUsageBinding,
     account_config_from_ref,
     load_config,
     save_config,
+    upsert_cursor_binding,
 )
 from quotadeck.core.flashbudget import ACTIVE_HOURS_PER_DAY, FlashBudget
 from quotadeck.core.mask import mask_text, safe_display_text
@@ -67,6 +73,60 @@ from quotadeck.usage.display import CumulativeSnapshot
 from quotadeck.usage.models import CostCurrency, UsagePeriod
 
 log = logging.getLogger("quotadeck.ui")
+
+CURSOR_ANALYTICS_URL = "https://cursor.com/dashboard/analytics"
+CURSOR_API_DOCS_URL = "https://cursor.com/docs/api"
+CURSOR_ADMIN_API_DOCS_URL = "https://cursor.com/docs/account/teams/admin-api"
+
+
+def open_official_url(url: str) -> bool:
+    """Open a documented official URL with the OS handler."""
+    return bool(QDesktopServices.openUrl(QUrl(url)))
+
+
+def show_cursor_guide_dialog(
+    parent,
+    lang: str,
+    *,
+    title_key: str,
+    body_key: str,
+    links: tuple[tuple[str, str], ...],
+    continue_key: str,
+    cancel_key: str,
+) -> bool:
+    """Show one onboarding modal. True means continue; cancel does not mutate config."""
+
+    box = QMessageBox(parent)
+    box.setWindowTitle(tr(lang, title_key))
+    box.setText(tr(lang, body_key))
+    box.setIcon(QMessageBox.Icon.Information)
+    box.setTextInteractionFlags(
+        Qt.TextInteractionFlag.TextSelectableByKeyboard
+        | Qt.TextInteractionFlag.TextSelectableByMouse
+    )
+    link_buttons: list[tuple[object, str]] = []
+    for label_key, url in links:
+        button = box.addButton(tr(lang, label_key), QMessageBox.ButtonRole.ActionRole)
+        button.setAccessibleName(tr(lang, label_key))
+        button.setAutoDefault(False)
+        link_buttons.append((button, url))
+    continue_btn = box.addButton(
+        tr(lang, continue_key), QMessageBox.ButtonRole.AcceptRole
+    )
+    continue_btn.setAccessibleName(tr(lang, continue_key))
+    cancel_btn = box.addButton(tr(lang, cancel_key), QMessageBox.ButtonRole.RejectRole)
+    cancel_btn.setAccessibleName(tr(lang, cancel_key))
+    box.setDefaultButton(continue_btn)
+    box.setEscapeButton(cancel_btn)
+    while True:
+        box.exec()
+        clicked = box.clickedButton()
+        for button, url in link_buttons:
+            if clicked is button:
+                open_official_url(url)
+                break
+        else:
+            return clicked is continue_btn
 
 
 def _price_catalog_date() -> str:
@@ -97,6 +157,11 @@ QToolButton#hint {
     background: #1A242C; color: #E8F0F4; border: 1px solid #2A3238; padding: 2px;
 }
 QToolButton#hint:hover, QToolButton#hint:focus { border-color: #3DDC97; }
+QToolButton#cursorSource {
+    background: #1A242C; color: #E8F0F4; border: 1px solid #2A3238; padding: 2px 8px;
+}
+QToolButton#cursorSource:hover, QToolButton#cursorSource:focus { border-color: #3DDC97; }
+QToolButton#cursorSource:disabled { color: #5A6870; border-color: #2A3238; }
 QListWidget { background: #141A1E; border: 1px solid #2A3238; }
 QCheckBox { color: #E8F0F4; }
 QScrollArea { border: none; background: #101418; }
@@ -131,6 +196,13 @@ class Worker(QThread):
         log.info("event=worker_run_start kind=upload force=%s", self.force)
         try:
             result = self.runtime.tick(force=self.force)
+            if not self.runtime.state.last_frames:
+                # A flash cooldown can reject the write before maybe_upload()
+                # renders anything. The settings window still needs an initial
+                # preview from the snapshots that were just polled.
+                self.runtime.state.last_frames = self.runtime.build_frames(
+                    list(self.runtime.state.last_polled)
+                )
             log.info(
                 "event=worker_result kind=upload duration_ms=%d result=%r",
                 int((time.monotonic() - started) * 1000),
@@ -173,10 +245,61 @@ class PreviewWorker(QThread):
             )
             self.failed.emit(mask_text(str(exc)))
 
+class CursorAdminConnectWorker(QThread):
+    succeeded = Signal(str, str)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        account_id: str,
+        email: str,
+        api_key: str,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.account_id = account_id
+        self.email = email
+        self._api_key = api_key
+        self.setObjectName("cursor-admin-connect")
+
+    def run(self) -> None:
+        try:
+            from quotadeck.usage.cursor_admin import (
+                collect_cursor_admin,
+                persist_admin_key_after_live_validation,
+            )
+
+            attempt = collect_cursor_admin(
+                account=self.account_id,
+                email=self.email,
+                api_key=self._api_key,
+                force=True,
+            )
+            if persist_admin_key_after_live_validation(attempt, self._api_key):
+                self.succeeded.emit(self.account_id, self.email)
+                return
+            self.failed.emit(
+                mask_text(attempt.reason or "Cursor Admin API validation failed.")
+            )
+        except Exception as exc:
+            log.exception("event=cursor_admin_connect_failed")
+            self.failed.emit(mask_text(str(exc)))
+        finally:
+            self._api_key = ""
+
+
 class AccountRow(QWidget):
+    connect_csv = Signal()
+    update_csv = Signal()
+    disconnect_usage = Signal()
+    connect_admin = Signal()
+    update_admin = Signal()
+
     def __init__(self, account: AccountConfig) -> None:
         super().__init__()
         self.account = account
+        self._lang = "ko"
+        self._source = ""
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
         self.check = QCheckBox(account.provider.upper())
@@ -196,11 +319,22 @@ class AccountRow(QWidget):
         self.meta = QLabel((account.source_label or "").upper())
         self.meta.setTextFormat(Qt.TextFormat.PlainText)
         self.meta.setStyleSheet("color:#7A9094;")
+        self.actions_btn = QToolButton()
+        self.actions_btn.setObjectName("cursorSource")
+        self.actions_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.actions_btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.actions_btn.setFixedHeight(22)
+        self.actions_btn.setMaximumWidth(88)
+        self.actions_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.actions_menu = QMenu(self.actions_btn)
+        self.actions_btn.setMenu(self.actions_menu)
         layout.addWidget(self.check)
         layout.addWidget(self.source)
         layout.addWidget(self.alias)
         layout.addWidget(self.remaining)
         layout.addWidget(self.meta, 1)
+        layout.addWidget(self.actions_btn)
+        self._refresh_cursor_actions("")
     def to_config(self) -> AccountConfig:
         return AccountConfig(
             provider=self.account.provider,
@@ -211,6 +345,48 @@ class AccountRow(QWidget):
             source_kind=self.account.source_kind,
             source_label=self.account.source_label,
         )
+
+    def apply_language(self, lang: str, *, source: str = "") -> None:
+        self._lang = "en" if lang == "en" else "ko"
+        self._refresh_cursor_actions(source)
+
+    def set_actions_enabled(self, enabled: bool) -> None:
+        self.actions_btn.setEnabled(enabled)
+
+    def _add_source_action(self, key: str, callback) -> None:
+        action = QAction(tr(self._lang, key), self.actions_menu)
+        action.setToolTip(tr(self._lang, key))
+        action.triggered.connect(callback)
+        self.actions_menu.addAction(action)
+
+    def _refresh_cursor_actions(self, source: str) -> None:
+        self._source = source
+        is_cursor = self.account.provider == "cursor"
+        self.actions_btn.setVisible(is_cursor)
+        if not is_cursor:
+            return
+        self.actions_menu.clear()
+        if source == "csv":
+            self.actions_btn.setText(tr(self._lang, "cursor_source_csv"))
+            self._add_source_action("cursor_update_csv", self.update_csv.emit)
+            self._add_source_action("cursor_switch_admin", self.connect_admin.emit)
+            self._add_source_action("cursor_disconnect", self.disconnect_usage.emit)
+            tip = tr(self._lang, "cursor_csv_tip")
+        elif source == "admin_api":
+            self.actions_btn.setText(tr(self._lang, "cursor_source_admin"))
+            self._add_source_action("cursor_update_admin", self.update_admin.emit)
+            self._add_source_action("cursor_switch_csv", self.connect_csv.emit)
+            self._add_source_action("cursor_disconnect", self.disconnect_usage.emit)
+            tip = tr(self._lang, "cursor_admin_tip")
+        else:
+            self.actions_btn.setText(tr(self._lang, "cursor_connect"))
+            self._add_source_action("cursor_connect_csv", self.connect_csv.emit)
+            self._add_source_action("cursor_connect_admin", self.connect_admin.emit)
+            tip = tr(self._lang, "cursor_hint")
+        self.actions_btn.setToolTip(tip)
+        self.actions_btn.setStatusTip(tip)
+        self.actions_btn.setAccessibleName(tr(self._lang, "cursor_actions"))
+        self.actions_btn.setAccessibleDescription(tip)
 
     def _reset_display(self) -> None:
         self.remaining.setText("--%")
@@ -355,7 +531,9 @@ class AccountRow(QWidget):
                 if snapshot.severity is Severity.ERROR
                 else "color:#F0C440;"
             )
-            if snapshot.status == "unsupported":
+            if snapshot.status == "unsupported" and self.account.provider == "cursor":
+                detail = tr(self._lang, "cursor_need_connect")
+            elif snapshot.status == "unsupported":
                 detail = snapshot.source_label or "ADMIN API REQUIRED"
             elif snapshot.source_label and snapshot.source_label != "THIS DEVICE":
                 detail = snapshot.source_label
@@ -389,6 +567,11 @@ class AccountRow(QWidget):
             f"THIS {compact_token_count(current_tokens)}",
             f"AVG {average} ({snapshot.comparison_display})",
         ]
+        selected = snapshot.period_comparison
+        if selected is not None and selected.history_estimated:
+            tooltip_lines.append(
+                "AVG EST: FIRST RETAINED PARTIAL MONTH PRORATED BY CALENDAR DAYS"
+            )
         models = self._model_breakdown(snapshot)
         if models:
             tooltip_lines.append("MODEL USAGE — GUI ONLY")
@@ -438,6 +621,7 @@ class MainWindow(QMainWindow):
         self.runtime = QuotaDeckRuntime(self.config)
         self.worker: Worker | None = None
         self.preview_worker: PreviewWorker | None = None
+        self.admin_worker: CursorAdminConnectWorker | None = None
         self.rows: list[AccountRow] = []
         self._busy = False
         self._display_refresh_pending = False
@@ -702,7 +886,15 @@ class MainWindow(QMainWindow):
         self.title.setText(self._t("accounts_title"))
         self.title.setToolTip(self._t("accounts_hint"))
         self.hint.setText(self._t("accounts_hint"))
-        self.accounts_hint_btn.apply_copy(self._t("hint_info"), self._t("accounts_hint"))
+        self.accounts_hint_btn.apply_copy(
+            self._t("hint_info"),
+            f"{self._t('accounts_hint')}\n{self._t('cursor_hint')}",
+        )
+        for row in self.rows:
+            row.apply_language(
+                self._lang(),
+                source=self.config.active_cursor_source(row.account.account_id),
+            )
         self.lbl_metric.setText(self._t("metric_mode"))
         self.lbl_period.setText(self._t("comparison_period"))
         self.lbl_currency.setText(self._t("cost_currency"))
@@ -806,7 +998,7 @@ class MainWindow(QMainWindow):
         self.mode.setToolTip(self._t("mode_smart_tip") if smart else self._t("mode_fixed_tip"))
 
     def update_hold_cycle(self) -> None:
-        enabled = sum(1 for row in self.rows if row.check.isChecked()) or len(self.rows)
+        enabled = self._lcd_enabled_count()
         hold = self.hold.value()
         cycle = cycle_seconds(enabled, hold)
         self.hold_cycle.setText(self._t("hold_cycle", hold=hold, cycle=cycle))
@@ -815,10 +1007,33 @@ class MainWindow(QMainWindow):
         self.hold.setToolTip(f"{self._t('hold_tip')}\n{tip}")
         self.hold_hint.apply_copy(self._t("hint_clock"), f"{self._t('hold_tip')}\n{tip}")
 
+    def _lcd_enabled_count(self) -> int:
+        checked = [row for row in self.rows if row.check.isChecked()]
+        rows = checked or list(self.rows)
+        metric = self.metric_combo.currentData() or self.config.metric_mode.value
+        if metric != "cumulative":
+            return len(rows)
+        from quotadeck.usage.display import visible_on_cumulative_lcd
+
+        visible = 0
+        period = str(self.period.currentData() or self.config.cumulative_period.value)
+        for row in rows:
+            key = f"{row.account.provider}:{row.account.account_id}"
+            snap = self.runtime.state.last_cumulative.get((key, period))
+            if snap is not None and not visible_on_cumulative_lcd(snap):
+                continue
+            visible += 1
+        return visible
+
     def update_fx_status(self) -> None:
         quote = getattr(self.runtime, "state", None)
         fx: FxRateQuote | None = getattr(quote, "fx_quote", None) if quote is not None else None
-        if not self.fx_auto.isChecked():
+        automatic = self.fx_auto.isChecked()
+        # In Auto mode the spin box is only a fallback, not the effective
+        # quote. Hide it so the live/cache rate shown alongside the checkbox
+        # cannot be mistaken for a fixed 1,400 KRW rate.
+        self.exchange_rate.setVisible(not automatic)
+        if not automatic:
             text = self._t("fx_source_manual", rate=self.exchange_rate.value())
         elif fx is None:
             text = self._t("fx_pending")
@@ -890,7 +1105,10 @@ class MainWindow(QMainWindow):
             self.runtime.adopt_display_state(previous)
 
     def _refresh_display_async(self, *, save: bool = False) -> None:
-        if not self._live or self._busy or self._quit_requested:
+        if not self._live or self._quit_requested:
+            return
+        if self._busy:
+            self._display_refresh_pending = True
             return
         if save:
             if not self.apply():
@@ -925,6 +1143,8 @@ class MainWindow(QMainWindow):
         enabled = not busy
         for button in (self.detect_btn, self.preview_btn, self.apply_btn, self.upload_btn):
             button.setEnabled(enabled)
+        for row in self.rows:
+            row.set_actions_enabled(enabled)
         if self.tray_upload is not None:
             self.tray_upload.setEnabled(enabled)
         if self.tray_quit is not None:
@@ -943,10 +1163,224 @@ class MainWindow(QMainWindow):
             self.list.addItem(item)
             self.list.setItemWidget(item, row)
             row.check.stateChanged.connect(lambda *_args: self.update_hold_cycle())
+            self._bind_cursor_row(row)
             self.rows.append(row)
         self.update_missing_label()
         self.update_hold_cycle()
         self._restore_cached_snapshots()
+
+    def _bind_cursor_row(self, row: AccountRow) -> None:
+        account_id = row.account.account_id
+        row.apply_language(
+            self._lang(),
+            source=self.config.active_cursor_source(account_id),
+        )
+        if row.account.provider != "cursor":
+            return
+        row.connect_csv.connect(lambda: self._import_cursor_csv(account_id))
+        row.update_csv.connect(lambda: self._import_cursor_csv(account_id))
+        row.disconnect_usage.connect(lambda: self._disconnect_cursor_usage(account_id))
+        row.connect_admin.connect(lambda: self._connect_cursor_admin(account_id))
+        row.update_admin.connect(lambda: self._refresh_cursor_runtime(force_admin=False))
+
+    def _cursor_accounts(self) -> list[AccountConfig]:
+        return [row.to_config() for row in self.rows if row.account.provider == "cursor"]
+
+    def _choose_cursor_account(self, preferred: str | None = None) -> str | None:
+        accounts = self._cursor_accounts()
+        if not accounts:
+            QMessageBox.information(self, "QuotaDeck", self._t("cursor_no_account"))
+            return None
+        if preferred:
+            return preferred
+        if len(accounts) == 1:
+            return accounts[0].account_id
+        labels = [f"{item.alias} ({item.account_id})" for item in accounts]
+        chosen, ok = QInputDialog.getItem(
+            self,
+            "QuotaDeck",
+            self._t("cursor_pick_account"),
+            labels,
+            0,
+            False,
+        )
+        if not ok:
+            return None
+        index = labels.index(chosen)
+        return accounts[index].account_id
+
+    def _refresh_cursor_runtime(self, *, force_admin: bool = False) -> None:
+        candidate = self.collect_config()
+        save_config(candidate)
+        self._adopt_runtime_config(candidate)
+        if hasattr(self.runtime.cumulative, "invalidate"):
+            self.runtime.cumulative.invalidate(force_admin=force_admin)
+        self.runtime.state.last_cumulative.clear()
+        for row in self.rows:
+            row.apply_language(
+                self._lang(),
+                source=self.config.active_cursor_source(row.account.account_id),
+            )
+        self.update_hold_cycle()
+        self._refresh_display_async(save=False)
+
+    def _confirm_cursor_csv_guide(self) -> bool:
+        return show_cursor_guide_dialog(
+            self,
+            self._lang(),
+            title_key="cursor_csv_guide_title",
+            body_key="cursor_csv_guide_body",
+            links=(("cursor_csv_guide_open", CURSOR_ANALYTICS_URL),),
+            continue_key="cursor_csv_guide_continue",
+            cancel_key="cursor_csv_guide_cancel",
+        )
+
+    def _confirm_cursor_admin_guide(self) -> bool:
+        return show_cursor_guide_dialog(
+            self,
+            self._lang(),
+            title_key="cursor_admin_guide_title",
+            body_key="cursor_admin_guide_body",
+            links=(
+                ("cursor_admin_guide_open_api", CURSOR_API_DOCS_URL),
+                ("cursor_admin_guide_open_admin", CURSOR_ADMIN_API_DOCS_URL),
+            ),
+            continue_key="cursor_admin_guide_continue",
+            cancel_key="cursor_admin_guide_cancel",
+        )
+
+    def _import_cursor_csv(self, account_id: str | None = None) -> None:
+        if self._busy:
+            return
+        if not self._confirm_cursor_csv_guide():
+            return
+        selected = self._choose_cursor_account(account_id)
+        if not selected:
+            return
+        path, _filter = QFileDialog.getOpenFileName(
+            self,
+            self._t("cursor_import_title"),
+            "",
+            "CSV (*.csv)",
+        )
+        if not path:
+            return
+        try:
+            from quotadeck.usage.cursor_import import (
+                bind_imported_cursor_csv,
+                import_cursor_csv,
+                release_unused_cursor_admin_key,
+            )
+
+            stored = import_cursor_csv(path, selected)
+            self.config = bind_imported_cursor_csv(self.collect_config(), selected, stored)
+            release_unused_cursor_admin_key(self.config)
+        except Exception as exc:
+            log.exception("event=cursor_csv_import_failed")
+            QMessageBox.warning(
+                self,
+                "QuotaDeck",
+                self._t("cursor_import_bad", reason=mask_text(str(exc))),
+            )
+            return
+        self.status.setText(self._t("cursor_import_ok"))
+        self._refresh_cursor_runtime()
+
+    def _disconnect_cursor_usage(self, account_id: str) -> None:
+        if self._busy:
+            return
+        try:
+            from quotadeck.usage.cursor_import import disconnect_cursor_account
+
+            self.config = disconnect_cursor_account(self.collect_config(), account_id)
+        except Exception as exc:
+            log.exception("event=cursor_disconnect_failed")
+            self._show_failure(mask_text(str(exc)))
+            return
+        self.status.setText(self._t("cursor_disconnected"))
+        self._refresh_cursor_runtime()
+
+    def _connect_cursor_admin(self, account_id: str | None = None) -> None:
+        if self._busy:
+            return
+        if not self._confirm_cursor_admin_guide():
+            return
+        selected = self._choose_cursor_account(account_id)
+        if not selected:
+            return
+        email = ""
+        try:
+            from quotadeck.core.models import AccountRef
+            from quotadeck.providers.cursor.statedb import load_cursor_auth_for
+
+            row = next(
+                (item for item in self.rows if item.account.account_id == selected),
+                None,
+            )
+            account = row.to_config() if row is not None else None
+            auth = load_cursor_auth_for(
+                AccountRef(
+                    provider="cursor",
+                    account_id=selected,
+                    display_name=selected,
+                    source_path=account.source_path if account else "",
+                )
+            )
+            email = (auth.email if auth is not None else "") or ""
+        except Exception:
+            email = ""
+        if not email:
+            QMessageBox.warning(self, "QuotaDeck", self._t("cursor_admin_missing_user"))
+            return
+        key, ok = QInputDialog.getText(
+            self,
+            self._t("cursor_admin_title"),
+            self._t("cursor_admin_prompt"),
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok or not str(key).strip():
+            return
+        self.set_busy(True)
+        self.status.setText(self._t("cursor_admin_testing"))
+        self.admin_worker = CursorAdminConnectWorker(
+            selected,
+            email,
+            str(key).strip(),
+            self,
+        )
+        self.admin_worker.succeeded.connect(self._on_cursor_admin_validated)
+        self.admin_worker.failed.connect(self._on_cursor_admin_validation_failed)
+        try:
+            self._start_thread(self.admin_worker, "cursor-admin-connect")
+        except Exception as exc:
+            self._on_cursor_admin_validation_failed(mask_text(str(exc)))
+        finally:
+            key = ""
+
+    def _on_cursor_admin_validated(self, account_id: str, email: str) -> None:
+        existing = self.config.cursor_binding(account_id)
+        self.config = upsert_cursor_binding(
+            self.collect_config(),
+            CursorUsageBinding(
+                account_id=account_id,
+                source="admin_api",
+                csv_path=existing.csv_path if existing else "",
+                imported_at=existing.imported_at if existing else "",
+                admin_email=email,
+                admin_user_id=account_id,
+            ),
+        )
+        self.status.setText(self._t("cursor_admin_ok"))
+        self._refresh_cursor_runtime(force_admin=False)
+
+    def _on_cursor_admin_validation_failed(self, reason: str) -> None:
+        QMessageBox.warning(
+            self,
+            "QuotaDeck",
+            self._t("cursor_admin_bad", reason=reason),
+        )
+        self.status.setText(self._t("cursor_admin_bad", reason=reason))
+
     def collect_config(self) -> AppConfig:
         accounts: list[AccountConfig] = []
         for index in range(self.list.count()):
@@ -990,6 +1424,7 @@ class MainWindow(QMainWindow):
             frame_budget=self.config.frame_budget,
             launch_at_startup=self.startup.isChecked(),
             ui_language=self._lang(),
+            cursor_bindings=list(self.config.cursor_bindings),
         )
     def detect(self) -> None:
         if self._busy:
@@ -1013,6 +1448,12 @@ class MainWindow(QMainWindow):
                 )
             )
         self.config.accounts = merged
+        wanted = {(item.provider, item.account_id) for item in merged}
+        self.config.cursor_bindings = [
+            item
+            for item in self.config.cursor_bindings
+            if ("cursor", item.account_id) in wanted
+        ]
         self.reload_accounts()
         self._restore_cached_snapshots()
         self.status.setText(self._t("status_found", count=len(found)))
@@ -1182,6 +1623,8 @@ class MainWindow(QMainWindow):
                 self.worker = None
             if self.preview_worker is worker:
                 self.preview_worker = None
+            if self.admin_worker is worker:
+                self.admin_worker = None
             worker.deleteLater()
             self.set_busy(False)
             log.exception("event=worker_start_failed kind=%s", kind)
@@ -1202,13 +1645,29 @@ class MainWindow(QMainWindow):
             self.worker = None
         if self.preview_worker is worker:
             self.preview_worker = None
+        if self.admin_worker is worker:
+            self.admin_worker = None
         log.info("event=worker_finished kind=%s active=%d", kind, len(self._active_threads))
         if not self._active_threads:
             self.set_busy(False)
             if self._quit_requested:
                 QTimer.singleShot(0, self._quit_now)
+            elif self._display_refresh_pending:
+                QTimer.singleShot(0, self._consume_pending_display_refresh)
             else:
                 self._schedule_refresh()
+
+    @Slot()
+    def _consume_pending_display_refresh(self) -> None:
+        if not self._display_refresh_pending:
+            return
+        if not self._live or self._quit_requested:
+            self._display_refresh_pending = False
+            return
+        if self._busy or self._active_threads:
+            return
+        self._display_refresh_pending = False
+        self._refresh_display_async(save=False)
 
     def _on_preview(self, snapshots, frames) -> None:
         self._apply_snapshots(snapshots)
@@ -1218,7 +1677,7 @@ class MainWindow(QMainWindow):
         if frames:
             self.preview.show_frames(frames)
         count = len(snapshots)
-        enabled = sum(1 for item in self.config.accounts if item.enabled)
+        enabled = self._lcd_enabled_count()
         hold = self.config.scene_hold_seconds
         self.status.setText(
             self._t(
@@ -1273,6 +1732,7 @@ class MainWindow(QMainWindow):
                 usd_to_krw_rate=rate,
                 krw_cost_label=self._t("currency_krw"),
             )
+        self.update_hold_cycle()
 
     def _on_fail(self, message: str) -> None:
         log.warning("event=worker_failure_presented message=%r", message)

@@ -19,11 +19,25 @@
 ---
 # QuotaDeck
 
-## v0.2.3 변경 요약
+## v0.2.3 최신 변경 요약
 
-누적 Usage collector와 기간·모델별 토큰 집계를 추가하고, 근거가 없는 Cursor 토큰 추정은 `N/A`로 제한했습니다. Display 비용 환산 행의 좌측 시작에는 코인 픽셀 아이콘을 배치했습니다.
+누적 Usage collector와 기간·모델별 토큰 집계, 부분 월 기반 `AVG EST`,
+KRW 자동 환율, 컴팩트 설정 UI를 제공합니다. Cursor는 설정의 소스 메뉴에서
+Usage CSV를 파일명 변경 없이 가져오거나, Enterprise Team Admin API를 Windows
+자격 증명 관리자에 안전하게 연결할 수 있습니다. 연결 전 팝업에서 공식
+[Analytics 대시보드](https://cursor.com/dashboard/analytics)와
+[Admin API 안내](https://cursor.com/docs/account/teams/admin-api)를 바로 엽니다.
 
-리뷰에서 Codex 로컬 스캐너의 기존 delta 재조정이 정규화 엔진 합계와 일치함을 확인·유지했습니다. Codex 이벤트 롤업은 바꾸지 않았습니다. 실제 수정은 Grok 세션 총계를 계정 원장처럼 더하지 않는 것과, 누적 LCD가 정규화 엔진을 소비해 Cursor의 가상 API 정가(`LIST`)를 표시하고 Grok 세션 총계는 일별 THIS/AVG로 쓰지 않는 것입니다.
+Codex 최신 `token_usage_record`의 `thread_id`를 독립 스트림으로 처리해 같은
+parent session을 공유하는 sibling thread가 손상 기록으로 오인되거나 누락되지
+않습니다. 실제 TEAM 프로필 재검증은 36개 파일·12,516개 usage event에서
+10,387개 observation, malformed 0건이었습니다. `PARTIAL`이어도 신뢰 가능한
+비율이 있으면 5단계 반응을 사용하므로 300% 이상은 쓰러짐 캐릭터로 표시합니다.
+
+F108 Pro의 실측 재생이 기존 20ms 해석보다 5배 빠른 점을 반영해 payload delay를
+4ms firmware tick으로 인코딩합니다. GUI/GIF는 20ms 논리 시간을 유지하므로
+계정당 5초 설정은 Preview와 LCD payload에서 모두 정확히 5초입니다. 기본
+frame budget은 48이며 구버전의 숨은 32 값은 config v7에서 자동 마이그레이션됩니다.
 
 Windows 기본 auto/Win32 전송은 `GET_FEATURE`가 65바이트 또는 64바이트를 돌려줘도 둘 다 리포트 ID(`buffer[0]`)를 제거하고 페이로드 접두사 `04 18 00 01`을 만들며, 64바이트 카운트는 부족한 마지막 바이트만 패딩하고, 그보다 짧은 읽기는 거절합니다.
 
@@ -35,7 +49,11 @@ Windows 기본 auto/Win32 전송은 `GET_FEATURE`가 65바이트 또는 64바이
 
 스프라이트 컴파일러는 Pillow `QuantOctree.c`를 바탕으로 한 고정 순서 알고리즘을 사용하며, 출처와 라이선스는 [LICENSE](LICENSE)에 기록했습니다. 문서 미리보기 내보내기는 픽셀이 같을 때 기존 PNG 바이트를 유지합니다. `python tools/gen_sprites.py --check`(기본 환경과 `PYTHONHASHSEED=1`), `tools/verify_refresh.py`, 문서 내보내기를 독립적으로 통과했습니다. `pyproject.toml`의 테스트 경로에 `src`와 저장소 루트를 함께 지정해 `pytest`와 `python -m pytest` 모두 `tools` 회귀 테스트를 수집합니다.
 
-2026-09-12 통합 검증은 **434 passed, 1 skipped, 8 subtests passed**였고, Windows GitHub Actions 빌드도 성공했습니다. 건너뛴 테스트는 Windows 디렉터리 심볼릭 링크 권한이 필요한 기존 테스트입니다. [CI 실행 기록](https://github.com/guyster323/F108pro_Usage_monitor/actions/runs/34682870012)
+2026-09-16 최신 로컬 통합 검증은 **512 passed, 1 skipped, 8 subtests
+passed**였고, 문서·스프라이트·frame budget 검사와 PyInstaller 패키지 렌더
+스모크 테스트도 통과했습니다. 건너뛴 테스트는 Windows 디렉터리 심볼릭 링크
+권한이 필요한 기존 테스트입니다. 이전 Windows CI 기록은
+[여기](https://github.com/guyster323/F108pro_Usage_monitor/actions/runs/34682870012)에서 확인할 수 있습니다.
 
 <p align="center">
   <img src="docs/cumulative-coin-preview.png" alt="Display 비용 환산 행의 코인 픽셀 아이콘" width="480">
@@ -113,14 +131,19 @@ Discovery (CLI / App) → 계정 선택 → Providers / 로컬 기록 → quota 
 | --- | --- | --- | --- |
 | Codex | 로컬 `sessions`, `archived_sessions` JSONL | 지원 | 가상 API 정가 `LIST` (명시적 API-key 또는 구독; 보고 지출 아님). 커스텀 엔드포인트는 `N/A` |
 | Claude Code | 로컬 `projects/**/*.jsonl` 응답 메타데이터 | 지원 | 가상 API 정가 `LIST` (명시적 API-key 또는 구독; 보고 지출 아님). 커스텀 엔드포인트는 `N/A` |
-| Cursor | 기본 N/A. 계정·시각이 있는 token-stats/서버 Usage export만 사용 | 조건부 | export가 있으면 가상 API 정가 `LIST`. 보고 지출과 섞지 않음 |
+| Cursor | GUI에서 가져온 Usage CSV 또는 Enterprise Team Admin API. 고급 사용자는 token-stats/export 사용 | 조건부 | 귀속 가능한 데이터가 있으면 가상 API 정가 `LIST`. 보고 지출과 섞지 않음 |
 | Grok Build | `grok usage`는 개별 세션 총계만 제공 | 기본 계정 카드는 N/A; 별도 보존한 external OTel v1 이벤트를 공급할 때만 일별 분석 가능 | 세션 총계는 일별 THIS/AVG로 표시하지 않음 |
 
 Cursor의 정확한 계정 범위 누적량에는 관리자 API 또는 신뢰할 수 있는
-export가 필요합니다. 0.2.3는 `state.vscdb`로 토큰을 추정하지 않고,
-token-stats 캐시 CSV처럼 계정·시각이 있는 collector 결과만 켭니다.
-token-stats는 선택적 우선 collector이고, Codex/Claude native parser가
-fallback이며, ccusage는 검증/fallback 경계입니다. 설치는 선택 사항입니다.
+export가 필요합니다. 0.2.3는 `state.vscdb`로 토큰을 추정하지 않습니다.
+설정에서 CSV를 한 번 고르면 `%APPDATA%\QuotaDeck\cursor-usage\`로 복사되고,
+Enterprise 관리자는 Windows 자격 증명 관리자에 둔 Admin API 키로 현재
+사용자 이벤트만 시간당 최대 한 번 가져올 수 있습니다. HTTP 200에 이벤트가
+없어도 연결은 유효합니다. 이전 캐시가 없으면 측정 0 대신 no-usage-yet를
+보여 주고, 기존 last-known-good은 stale로 유지합니다. 미연결 Cursor는
+누적 LCD에서만 숨깁니다. token-stats는 선택적 우선 collector이고,
+Codex/Claude native parser가 fallback이며, ccusage는 검증/fallback
+경계입니다. 설치는 선택 사항입니다.
 Grok 세션은 resume/fork 이력이 겹칠 수 있어 합산하지 않으며, `updatedAt`을
 사용 날짜로 간주하지 않습니다. 전체 계약과 가격 제한은
 [누적 사용량 모드](docs/CUMULATIVE_USAGE.md)와
@@ -128,9 +151,10 @@ Grok 세션은 resume/fork 이력이 겹칠 수 있어 합산하지 않으며, `
 
 일별은 오늘과 이전 완료일 평균을 비교하며 최소 7일의 완료일이 필요합니다.
 월별은 이번 달 1일부터 현재까지(MTD)와 이전 완료 월들의 월평균을 비교하며
-최소 1개의 완료 월이 필요합니다. 최초 관측이 월 중간이면 그 부분 월은 평균에서
-제외하고, 이후 사용이 없던 완료 월은 0으로 포함합니다. 현재 월의 사용량을
-월말 예상치로 보정하지 않습니다.
+최소 1개의 과거 월 표본이 필요합니다. 최초 관측이 월 중간이면 보존된 달력일의
+일평균에 해당 월의 전체 일수를 곱해 첫 월을 추정하고 `EST`로 표시합니다.
+그 이후 사용이 없던 완료 월은 0으로 포함합니다. 현재 월의 사용량 자체는 월말
+예상치로 보정하지 않습니다.
 
 | 선택 기간 `THIS ÷ AVG` | 캐릭터 반응 |
 | ---: | --- |
@@ -144,10 +168,12 @@ Grok 세션은 resume/fork 이력이 겹칠 수 있어 합산하지 않으며, `
 포화되지만 숫자는 150%, 200%를 유지하고 300% 이상을 `300%+`로 표시합니다.
 Bar 아래에는 큰 글씨로 같은 단위의 토큰과 비용을 나란히 표시합니다.
 비용 행 좌측 시작에는 작은 투명 픽셀 코인 아이콘이 있습니다.
-정상 Bar 제목은 선택 기간에 따라 `M AVG` 또는 `D AVG`로만 보입니다. 작은
+정상 Bar 제목은 선택 기간에 따라 `M AVG` 또는 `D AVG`, 첫 부분 월을 환산한
+평균은 `M EST`로 보입니다. 작은
 LCD에는 통화명과 한글을 넣지 않고 비용도 ASCII `K/M/B` 단위만 사용합니다.
-이력이 부족하면 `M/D BUILD`, 부분 기록이면 `M/D PARTIAL`, 사용할 수 없으면
-`M/D N/A`로 즉시 구분됩니다.
+읽기 오류가 있는 subtotal은 숫자를 유지하면서 `M/D PARTIAL`로 표시합니다.
+사용 가능한 과거 표본이 전혀 없을 때만 `M/D BUILD`, 귀속 가능한 원장이 없을
+때만 `M/D N/A`로 구분됩니다.
 
 ```text
 THIS   AVG          THIS   AVG
@@ -179,8 +205,10 @@ last-known-good 캐시, 그다음 기본 **1,400원/USD** 수동 폴백을 씁�
 ### 실행 파일
 
 저장소의 [dist/QuotaDeck.exe](dist/QuotaDeck.exe)는 Python 설치 없이 실행할 수
-있습니다. 2026-09-12 Win32 LCD 전송과 GUI 시작 오류 수정을 반영해 다시 빌드하고,
-이 PC에서 앱 기동·키보드 연결·미리보기를 확인했습니다.
+있습니다. 2026-09-16 Cursor 연결 UX, Admin API, Codex thread 스캔, 부분 월
+추정과 F108 4ms firmware timing을 반영해 다시 빌드했으며, 패키지 CLI와
+4계정×5초 Preview 렌더를 확인했습니다. 실제 LCD 재생 시간은 연결된 키보드에서
+한 번 더 확인해야 합니다.
 직접 빌드하려면 아래 소스 실행 안내와 `QuotaDeck.spec`을 사용하세요.
 
 1. F108 Pro를 **USB-C 유선**으로 연결하고 `Fn+4`를 누릅니다.
@@ -209,6 +237,9 @@ py -3.12 -m venv .venv
   환율**이며 미국 재무부 분기 공식 고시(실시간 현물가 아님) → 캐시 → 수동
   1,400원/USD 순입니다. 자세한 출처·기준일은 환율 아이콘 hover에 있습니다.
   원화 K/M/B 범례(`1K = 천만원`)도 hover로 옮겨 두었습니다.
+- **Cursor 소스 메뉴** — 개인 사용자는 안내 팝업의 Analytics 링크에서 Usage
+  CSV를 받은 뒤 바로 선택합니다. Enterprise 관리자는 같은 메뉴에서 Admin API
+  키를 검증·연결합니다. 키는 설정 파일이나 로그에 저장되지 않습니다.
 - **계정 다시 찾기** — 이 PC의 CLI/앱 로그인을 다시 스캔합니다.
 - 체크박스 — 키보드에 올릴 계정만 켭니다. 별명은 LCD에 표시됩니다.
 - **미리보기** — 업로드 없이 선택한 잔여/누적 HUD를 확인합니다. 모든 계정은 설정한 계정당 표시 시간만큼 순환합니다.
@@ -225,8 +256,9 @@ py -3.12 -m venv .venv
 새 설정이나 시간 필드가 없는 설정은 5초입니다. 업그레이드할 때는 사용자가
 정한 값을 덮어쓰지 않기 위해 기존 `scene_hold_seconds`(2~20초)를 보존하므로,
 예전 4초/10초가 남아 있으면 설정에서 5초로 한 번 변경하세요.
-누적 집계 기간·비용 통화·환율(자동/수동 폴백)은 설정 파일 v5에 저장됩니다.
-이전 설정에 필드가 없으면 월별·KRW·자동 환율·1,400원/USD 폴백을 사용합니다.
+현재 설정 스키마는 **v7**입니다. 누적 기간·통화·환율과 Cursor CSV/Admin
+바인딩을 저장하며, API 키는 제외합니다. 이전 설정은 월별·KRW·자동 환율·
+1,400원/USD 폴백과 frame budget 48로 안전하게 마이그레이션됩니다.
 
 트레이 앱은 이 주기로 자동 조회합니다. 조회 뒤 렌더 결과가 바뀌었거나 오래된 경우에도
 별도의 최소 기록 간격과 영속화된 하루 안전 한도를 통과할 때만 키보드에 씁니다.

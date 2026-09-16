@@ -409,6 +409,143 @@ def test_codex_current_token_usage_records_and_cache_writes(tmp_path: Path) -> N
     assert second_tokens.output_tokens == 10
     assert second_tokens.total_tokens == 60
     assert {item.model for item in dataset.observations} == {"gpt-5.6-sol"}
+    coverage = dataset.coverages[0]
+    assert dict(coverage.reason_buckets).get("token_usage_record_supported") == 2
+    assert coverage.malformed_usage_events == 0
+
+
+def _official_thread_record(
+    timestamp: str,
+    *,
+    session_id: str,
+    thread_id: str,
+    response_id: str,
+    tokens: dict[str, int],
+    include_usage: bool = True,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "session_id": session_id,
+        "thread_id": thread_id,
+        "turn_id": f"turn-{response_id}",
+        "root_turn_id": f"root-{response_id}",
+        "response_id": response_id,
+        "turn_token_usage": tokens,
+        "thread_token_usage": tokens,
+    }
+    if include_usage:
+        payload["usage"] = tokens
+    return {
+        "timestamp": timestamp,
+        "type": "token_usage_record",
+        "payload": payload,
+    }
+
+
+def test_codex_sibling_threads_sharing_parent_session_are_kept(tmp_path: Path) -> None:
+    tokens_a = {
+        "input_tokens": 40,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 10,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 50,
+    }
+    tokens_b = {
+        "input_tokens": 80,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 20,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 100,
+    }
+    parent = "11111111-1111-1111-1111-111111111111"
+    _write_jsonl(
+        tmp_path / "sessions" / "thread-a.jsonl",
+        [
+            {"type": "session_meta", "payload": {"id": "rollout-a"}},
+            _official_thread_record(
+                "2026-09-11T10:00:00Z",
+                session_id=parent,
+                thread_id="thread-a",
+                response_id="resp-a",
+                tokens=tokens_a,
+            ),
+        ],
+    )
+    _write_jsonl(
+        tmp_path / "sessions" / "thread-b.jsonl",
+        [
+            {"type": "session_meta", "payload": {"id": "rollout-b"}},
+            _official_thread_record(
+                "2026-09-11T10:01:00Z",
+                session_id=parent,
+                thread_id="thread-b",
+                response_id="resp-b",
+                tokens=tokens_b,
+                include_usage=False,
+            ),
+        ],
+    )
+
+    dataset = scan_codex_usage(tmp_path)
+    assert len(dataset.observations) == 2
+    assert sorted(item.tokens.total_tokens for item in dataset.observations) == [50, 100]
+    coverage = dataset.coverages[0]
+    assert coverage.malformed_usage_events == 0
+    assert not coverage.is_partial
+    buckets = dict(coverage.reason_buckets)
+    assert buckets.get("token_usage_record_supported") == 2
+    assert buckets.get("incompatible_session_streams", 0) == 0
+
+
+def test_codex_same_thread_divergent_copies_stay_partial(tmp_path: Path) -> None:
+    tokens = {
+        "input_tokens": 40,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 10,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 50,
+    }
+    other = {
+        "input_tokens": 90,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 10,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 100,
+    }
+    _write_jsonl(
+        tmp_path / "sessions" / "a.jsonl",
+        [
+            {"type": "session_meta", "payload": {"id": "shared-meta"}},
+            _official_thread_record(
+                "2026-09-11T10:00:00Z",
+                session_id="shared-session",
+                thread_id="same-thread",
+                response_id="resp-a",
+                tokens=tokens,
+            ),
+        ],
+    )
+    _write_jsonl(
+        tmp_path / "sessions" / "b.jsonl",
+        [
+            {"type": "session_meta", "payload": {"id": "shared-meta"}},
+            _official_thread_record(
+                "2026-09-11T10:02:00Z",
+                session_id="shared-session",
+                thread_id="same-thread",
+                response_id="resp-b",
+                tokens=other,
+            ),
+        ],
+    )
+    dataset = scan_codex_usage(tmp_path)
+    coverage = dataset.coverages[0]
+    assert coverage.malformed_usage_events == 1
+    assert coverage.is_partial
+    assert dict(coverage.reason_buckets).get("incompatible_session_streams") == 1
 
 
 def test_codex_invalid_counters_are_partial_not_zero(tmp_path: Path) -> None:

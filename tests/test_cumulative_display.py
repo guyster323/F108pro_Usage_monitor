@@ -13,6 +13,7 @@ from quotadeck.renderer.layout import (
     compact_cost_pair,
     compact_token_count,
     compact_token_pair,
+    cumulative_bar_caption,
     cumulative_period_display,
     paint_cumulative_account,
 )
@@ -48,6 +49,7 @@ def _snapshot(
     period: UsagePeriod = UsagePeriod.DAILY,
     model_name: str = "gpt-5.6-sol",
     status: str = "ok",
+    history_estimated: bool = False,
 ) -> CumulativeSnapshot:
     end = date(2026, 9, 11)
     start = end - timedelta(days=9)
@@ -72,6 +74,7 @@ def _snapshot(
         minimum_history_periods=7 if period is UsagePeriod.DAILY else 1,
         ratio=ratio,
         intensity=intensity,
+        history_estimated=history_estimated,
     )
     comparison = UsageComparison(
         today_tokens=today_tokens,
@@ -111,7 +114,7 @@ def test_metric_mode_is_independent_of_account_order_mode() -> None:
     assert MetricMode.CUMULATIVE.value not in {item.value for item in DisplayMode}
 
 
-def test_legacy_config_migrates_to_quota_and_v5(tmp_path: Path) -> None:
+def test_legacy_config_migrates_to_quota_and_current_version(tmp_path: Path) -> None:
     source = tmp_path / "legacy.json"
     source.write_text(
         json.dumps({"config_version": 3, "display_mode": "fixed"}),
@@ -126,7 +129,7 @@ def test_legacy_config_migrates_to_quota_and_v5(tmp_path: Path) -> None:
 
     save_config(config, source)
     saved = json.loads(source.read_text(encoding="utf-8"))
-    assert saved["config_version"] == CONFIG_VERSION == 5
+    assert saved["config_version"] == CONFIG_VERSION == 7
     assert saved["metric_mode"] == "quota"
     assert saved["cumulative_period"] == "monthly"
     assert saved["cost_currency"] == "krw"
@@ -252,6 +255,98 @@ def test_five_usage_intensities_select_five_reaction_states() -> None:
         snapshot = _snapshot(intensity, ratio)
         assert snapshot.sprite_state == state
         assert snapshot.severity is severity
+
+
+def test_partial_snapshot_with_ratio_uses_five_band_reaction_sprite() -> None:
+    snapshot = _snapshot(
+        UsageIntensity.COLLAPSED_3X,
+        3.2,
+        today_tokens=9_600,
+        average_tokens=3_000,
+        period=UsagePeriod.MONTHLY,
+        status="partial",
+        this_cost_usd=Decimal("1"),
+        average_cost_usd=Decimal("2"),
+    )
+    assert snapshot.status == "partial"
+    assert snapshot.ratio == 3.2
+    assert snapshot.this_cost_usd is None
+    assert snapshot.severity is Severity.STALE
+    assert snapshot.sprite_state == "usage_300"
+    assert cumulative_bar_caption(snapshot, CostCurrency.KRW) == "M PARTIAL"
+
+
+def test_partial_without_ratio_falls_back_to_stale_sprite() -> None:
+    snapshot = _snapshot(
+        UsageIntensity.INSUFFICIENT_HISTORY,
+        None,
+        status="partial",
+    )
+    assert snapshot.sprite_state == "stale"
+    assert cumulative_bar_caption(snapshot, CostCurrency.KRW) == "D PARTIAL"
+
+
+def test_partial_collapsed_playlist_requests_knocked_down_sprite(monkeypatch) -> None:
+    import quotadeck.renderer.scenes as scenes
+
+    seen: list[str] = []
+
+    class FakeTheme:
+        root = Path("unused")
+
+        @staticmethod
+        def state_images(_provider: str, state: str) -> list[Image.Image]:
+            seen.append(state)
+            return [Image.new("RGBA", (32, 32), (0, 0, 0, 0))]
+
+        @staticmethod
+        def accent(_provider: str) -> str:
+            return "#19D79C"
+
+    monkeypatch.setattr(scenes, "load_theme", lambda _path: FakeTheme())
+    snapshot = _snapshot(
+        UsageIntensity.COLLAPSED_3X,
+        3.0,
+        period=UsagePeriod.MONTHLY,
+        status="partial",
+    )
+    frames = render_cumulative_playlist([snapshot], Path("unused"), frame_budget=8)
+    assert frames
+    assert "usage_300" in seen
+    assert "stale" not in seen
+
+
+def test_estimated_and_partial_snapshots_keep_numeric_average_with_clear_label() -> None:
+    estimated = _snapshot(
+        UsageIntensity.BELOW_AVERAGE,
+        0.5,
+        average_tokens=3_000,
+        period=UsagePeriod.MONTHLY,
+        history_estimated=True,
+    )
+    assert estimated.average_tokens == 3_000
+    assert estimated.comparison_display == "0.5X EST"
+    assert cumulative_bar_caption(estimated, CostCurrency.KRW) == "M EST"
+
+    partial = _snapshot(
+        UsageIntensity.BELOW_AVERAGE,
+        0.5,
+        average_tokens=3_000,
+        period=UsagePeriod.MONTHLY,
+        status="partial",
+        history_estimated=True,
+    )
+    assert partial.average_tokens == 3_000
+    assert partial.ratio == 0.5
+    assert partial.comparison_display == "0.5X EST"
+    assert cumulative_bar_caption(partial, CostCurrency.KRW) == "M PARTIAL"
+
+    very_low = _snapshot(
+        UsageIntensity.BELOW_AVERAGE,
+        0.05,
+        history_estimated=True,
+    )
+    assert very_low.comparison_display == "<0.1X EST"
 
 
 def test_cumulative_smart_order_is_highest_multiple_first() -> None:
@@ -415,7 +510,7 @@ def test_cumulative_hash_ignores_hidden_status_currency_and_rate() -> None:
     from quotadeck.core.scheduler import cumulative_render_hash
 
     unsupported = CumulativeSnapshot.unsupported(
-        provider="cursor",
+        provider="grok",
         account_id="one",
         display_name="ONE",
         period=UsagePeriod.MONTHLY,
@@ -581,6 +676,128 @@ def test_unavailable_card_is_simple_and_does_not_draw_source_metadata(monkeypatc
     assert "N/A" in drawn
     assert "OTEL REQUIRED" not in drawn
     assert "ADMIN API" not in drawn
+
+
+def test_stale_snapshot_keeps_tokens_and_shows_stale_caption() -> None:
+    snapshot = _snapshot(
+        UsageIntensity.ABOVE_1_5X,
+        1.5,
+        today_tokens=3_000,
+        average_tokens=2_000,
+        period=UsagePeriod.MONTHLY,
+        status="stale",
+        this_cost_usd=Decimal("1"),
+        average_cost_usd=Decimal("2"),
+    )
+    snapshot = CumulativeSnapshot(
+        provider="cursor",
+        account_id=snapshot.account_id,
+        display_name=snapshot.display_name,
+        plan=snapshot.plan,
+        report=snapshot.report,
+        status="stale",
+        source_label="CURSOR ADMIN STALE",
+        period=UsagePeriod.MONTHLY,
+        this_cost_usd=Decimal("1"),
+        average_cost_usd=Decimal("2"),
+    )
+    assert snapshot.available
+    assert snapshot.this_tokens == 3_000
+    assert snapshot.average_tokens == 2_000
+    assert snapshot.this_cost_usd is None
+    assert snapshot.severity is Severity.STALE
+    assert snapshot.sprite_state == "stale"
+    assert cumulative_bar_caption(snapshot, CostCurrency.KRW) == "M STALE"
+    assert "STALE" in snapshot.source_label
+
+
+def test_only_unsupported_cursor_playlist_returns_idle_frame(monkeypatch) -> None:
+    import quotadeck.renderer.scenes as scenes
+
+    class FakeTheme:
+        root = Path("unused")
+
+        @staticmethod
+        def state_images(_provider: str, state: str) -> list[Image.Image]:
+            raise AssertionError("unsupported Cursor must not render a card")
+
+        @staticmethod
+        def accent(_provider: str) -> str:
+            return "#19D79C"
+
+    monkeypatch.setattr(scenes, "load_theme", lambda _path: FakeTheme())
+    painted: list[str] = []
+    original = scenes.paint_empty
+
+    def capture_empty():
+        painted.append("empty")
+        return original()
+
+    monkeypatch.setattr(scenes, "paint_empty", capture_empty)
+    cursor = CumulativeSnapshot.unsupported(
+        provider="cursor",
+        account_id="work",
+        display_name="WORK",
+    )
+    frames = render_cumulative_playlist(
+        [cursor],
+        Path("unused"),
+        mode=DisplayMode.FIXED,
+        frame_budget=4,
+        hold_ms=2_000,
+    )
+    from quotadeck.devices.aula_f108.payload import build_payload, payload_duration_ms
+
+    assert painted == ["empty"]
+    assert len(frames) == 2
+    assert all(frame.image.size == (240, 135) for frame in frames)
+    assert all(frame.delay_ms <= 1020 for frame in frames)
+    preview_ms = sum(frame.delay_ms for frame in frames)
+    assert preview_ms == 2000
+    payload = build_payload(frames)
+    assert payload_duration_ms(payload) == preview_ms
+
+
+def test_unsupported_cursor_is_omitted_from_cumulative_rotation(monkeypatch) -> None:
+    import quotadeck.renderer.scenes as scenes
+
+    requested: list[str] = []
+
+    class FakeTheme:
+        root = Path("unused")
+
+        @staticmethod
+        def state_images(provider: str, state: str) -> list[Image.Image]:
+            requested.append(provider)
+            return [Image.new("RGBA", (88, 108), (0, 0, 0, 0))]
+
+        @staticmethod
+        def accent(_provider: str) -> str:
+            return "#19D79C"
+
+    monkeypatch.setattr(scenes, "load_theme", lambda _path: FakeTheme())
+    cursor = CumulativeSnapshot.unsupported(
+        provider="cursor",
+        account_id="work",
+        display_name="WORK",
+    )
+    grok = CumulativeSnapshot.unsupported(
+        provider="grok",
+        account_id="g1",
+        display_name="GROK",
+        source_label="OTEL REQUIRED",
+    )
+    ordered = _order_cumulative([cursor, grok], DisplayMode.FIXED)
+    assert [item.provider for item in ordered] == ["grok"]
+    frames = render_cumulative_playlist(
+        [cursor, grok],
+        Path("unused"),
+        mode=DisplayMode.FIXED,
+        frame_budget=4,
+        hold_ms=2_000,
+    )
+    assert requested == ["grok"]
+    assert frames
 
 
 def test_cli_exposes_cumulative_models_and_model_price_filters() -> None:

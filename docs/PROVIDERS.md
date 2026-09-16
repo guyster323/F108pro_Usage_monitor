@@ -55,10 +55,10 @@ The period contract is calendar-based in the current system time zone:
 The LCD bar is `THIS tokens / AVG tokens × 100`. Its fill saturates at 100%,
 but the numeric label preserves over-average meaning and reaches `300%+`.
 Normal captions contain only the period and baseline (`M AVG` or `D AVG`); the
-LCD omits currency labels and Hangul. Insufficient, partial, and unavailable
-histories instead use
-`M/D BUILD`, `M/D PARTIAL`, and `M/D N/A` so they cannot resemble a measured
-average.
+LCD omits currency labels and Hangul. A prorated first partial month uses
+`M EST`, while read-error subtotals use `M/D PARTIAL` and keep their numeric
+best-effort average. `M/D BUILD` is reserved for no historical sample and
+`M/D N/A` for no attributable ledger.
 `THIS` and `AVG` token values use one shared compact unit so large pairs remain
 directly comparable (for example, `0.6B / 1.2B`). Model information is GUI-only:
 the account row shows the top two models for the selected period, while its
@@ -67,14 +67,24 @@ inspection through `quotadeck usage --cumulative --models` (or
 `quotadeck cumulative --models`).
 
 Cursor exposes administrator usage data, and OpenAI/Anthropic also have
-organization or administrator usage/cost products, but QuotaDeck 0.2 does
-**not** collect administrator keys or call those APIs. Do not configure an
-admin secret expecting it to enable the LCD card. 0.2.3 may enable a Cursor
-cumulative card only from an attributable exported/server-derived collector
-file (typically token-stats `usage.<account>.csv`). See
-[COLLECTORS.md](COLLECTORS.md). token-stats is the preferred optional
-collector for Codex/Claude/Cursor; native parsers remain the fallback;
-ccusage is a validation/fallback boundary and is never blended.
+organization or administrator usage/cost products. QuotaDeck 0.2 does
+**not** collect OpenAI/Anthropic administrator keys. Cursor Team Admin API
+(`filtered-usage-events`) is optional: the key is stored only in Windows
+Credential Manager, never in `config.json` or logs, and events are filtered
+to the current signed-in user. A successful empty current-user page is a
+validated connection: no prior cache stays no-usage-yet, while a non-empty
+last-known-good cache is kept stale rather than overwritten; hourly
+menu refresh stays gated, and the per-account reservation is interprocess-safe.
+A personal account can instead use the
+settings **Connect** action to import a dashboard CSV into
+`%APPDATA%\QuotaDeck\cursor-usage\` without renaming files or setting
+environment variables. Advanced token-stats `usage.<account>.csv` / env
+paths remain available and are never blended with Admin API or GUI CSV.
+Unconnected Cursor stays in settings but is omitted from cumulative
+LCD/Preview rotation. See [COLLECTORS.md](COLLECTORS.md). token-stats is
+the preferred optional collector for Codex/Claude/Cursor; native parsers
+remain the fallback; ccusage is a validation/fallback boundary and is
+never blended.
 
 `grok usage` is authoritative for one persisted session, including recorded
 cost ticks when present. It is not an account ledger: resumed and forked

@@ -414,8 +414,8 @@ def test_cumulative_facade_marks_partial_and_never_prices_it(tmp_path: Path) -> 
     assert snapshot.cost_display is None
     assert snapshot.sprite_state == "stale"
     assert snapshot.ratio is None
-    assert snapshot.intensity is None
-    assert snapshot.comparison_display == "N/A"
+    assert snapshot.intensity is UsageIntensity.INSUFFICIENT_HISTORY
+    assert snapshot.comparison_display == "PARTIAL"
 
 
 def test_cumulative_facade_marks_cursor_unsupported(tmp_path: Path) -> None:

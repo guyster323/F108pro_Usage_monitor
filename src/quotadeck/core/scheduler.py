@@ -30,6 +30,7 @@ from quotadeck.core.models import (
     normalize_remaining,
 )
 from quotadeck.core.severity import RESET_HOLD, detect_reset, snapshot_severity
+from quotadeck.devices.aula_f108.constants import LCD_DEFAULT_BUDGET
 from quotadeck.devices.aula_f108.device import F108Device
 from quotadeck.devices.aula_f108.payload import Frame
 from quotadeck.discovery.accounts import select_accounts
@@ -52,6 +53,7 @@ from quotadeck.diagnostics import log_snapshot_errors
 from quotadeck.usage.display import CumulativeSnapshot
 from quotadeck.usage.fx import FxFetchError, FxRateQuote, default_fx_cache_path, resolve_usd_krw_rate
 from quotadeck.usage.models import CostCurrency
+from quotadeck.usage.collectors import CollectorSettings
 from quotadeck.usage.service import CumulativeUsageService
 log = logging.getLogger("quotadeck")
 
@@ -84,7 +86,7 @@ def render_hash(
     theme: str,
     mode: str,
     hold_seconds: int = 5,
-    frame_budget: int = 32,
+    frame_budget: int = LCD_DEFAULT_BUDGET,
 ) -> str:
     rows = []
     for snap in snapshots:
@@ -136,7 +138,7 @@ def cumulative_render_hash(
     theme: str,
     mode: str,
     hold_seconds: int = 5,
-    frame_budget: int = 32,
+    frame_budget: int = LCD_DEFAULT_BUDGET,
     currency: CostCurrency = CostCurrency.USD,
     usd_to_krw_rate: Decimal | int | float | str = 1400,
 ) -> str:
@@ -237,6 +239,7 @@ class QuotaDeckRuntime:
         self.cumulative = CumulativeUsageService(
             cache_seconds=max(15, min(60, self.config.poll_seconds)),
         )
+        self.cumulative.loader.collector = CollectorSettings.from_config(self.config)
 
     def adopt_display_state(self, previous: SchedulerState | None) -> None:
         """Keep per-mode snapshot and FX caches across Apply replacements."""

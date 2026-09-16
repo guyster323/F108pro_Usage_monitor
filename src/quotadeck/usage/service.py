@@ -19,7 +19,8 @@ from quotadeck.usage.collectors import (
     ValidationStatus,
     mark_dataset_partial,
 )
-from quotadeck.usage.cursor_export import collect_cursor_export
+from quotadeck.usage.cursor_admin import ADMIN_EMPTY_REASON
+from quotadeck.usage.cursor_export import collect_cursor_usage
 from quotadeck.usage.display import CumulativeSnapshot
 from quotadeck.usage.local import scan_claude_usage, scan_codex_usage
 from quotadeck.usage.models import (
@@ -28,6 +29,7 @@ from quotadeck.usage.models import (
     UsageDataset,
     UsagePeriod,
     UsageReport,
+    UsageSourceKind,
 )
 from quotadeck.usage.token_stats import collect_token_stats
 
@@ -110,6 +112,7 @@ class UsageLoadResult:
     period_costs: tuple[PeriodCostComparison, ...] = ()
     reason: str | None = None
     from_cache: bool = False
+    stale: bool = False
 
     @property
     def available(self) -> bool:
@@ -133,6 +136,11 @@ class UsageLoadResult:
 
 def _coverage_status(dataset: UsageDataset) -> tuple[UsageLoadStatus, str | None]:
     if not dataset.observations:
+        if any(
+            coverage.source_kind is UsageSourceKind.CURSOR_ADMIN
+            for coverage in dataset.coverages
+        ):
+            return UsageLoadStatus.UNAVAILABLE, ADMIN_EMPTY_REASON
         if any(
             coverage.files_discovered
             or coverage.usage_events_seen
@@ -323,6 +331,11 @@ class UsageService:
     ) -> None:
         self.cache = cache if cache is not None else UsageDatasetCache()
         self.collector = collector
+        self._force_cursor_admin = False
+
+    def invalidate(self, *, force_admin: bool = False) -> None:
+        self.cache.invalidate()
+        self._force_cursor_admin = force_admin
 
     def load(
         self,
@@ -342,18 +355,29 @@ class UsageService:
         collector: CollectorSettings | None = None,
         token_stats_runner: Any = None,
         ccusage_runner: Any = None,
+        account_email: str | None = None,
+        secret_store: Any = None,
+        admin_root: Any = None,
+        admin_poster: Any = None,
     ) -> UsageLoadResult:
         normalized_provider = provider.casefold().strip()
         settings = collector if collector is not None else self.collector
         if settings is None:
             settings = CollectorSettings.from_env() if self.collector is None else self.collector
         if normalized_provider == "cursor":
+            dataset, from_cache, stale, error_reason = self._load_cursor_dataset(
+                account_id=account_id or "",
+                settings=settings,
+                force=force,
+                account_email=account_email,
+                secret_store=secret_store,
+                admin_root=admin_root,
+                admin_poster=admin_poster,
+                runner=token_stats_runner,
+            )
             return self._finish_dataset(
                 normalized_provider,
-                self._load_cursor_dataset(
-                    account_id=account_id or "",
-                    settings=settings,
-                ),
+                dataset,
                 today=today,
                 timezone_name=timezone_name,
                 lookback_days=lookback_days,
@@ -362,7 +386,9 @@ class UsageService:
                 comparison_days=comparison_days,
                 cost_estimator=cost_estimator,
                 billing_kind=billing_kind,
-                from_cache=False,
+                from_cache=from_cache,
+                stale=stale,
+                error_reason=error_reason,
             )
         if normalized_provider not in {"codex", "claude"}:
             return UsageLoadResult(
@@ -481,11 +507,38 @@ class UsageService:
         *,
         account_id: str,
         settings: CollectorSettings,
-    ) -> UsageDataset | None:
-        attempt = collect_cursor_export(account=account_id, settings=settings)
-        if attempt.usable:
-            return attempt.dataset
-        return None
+        force: bool = False,
+        account_email: str | None = None,
+        secret_store: Any = None,
+        admin_root: Any = None,
+        admin_poster: Any = None,
+        runner: Any = None,
+    ) -> tuple[UsageDataset | None, bool, bool, str | None]:
+        key = ("cursor", account_id, settings.cache_fingerprint())
+        if not force:
+            cached = self.cache.get(key)
+            if cached is not None:
+                return cached, True, False, None
+        force_admin = force or self._force_cursor_admin
+        attempt = collect_cursor_usage(
+            account=account_id,
+            settings=settings,
+            email=account_email,
+            user_id=account_id,
+            store=secret_store,
+            admin_root=admin_root,
+            poster=admin_poster,
+            force_admin=force_admin,
+            runner=runner,
+        )
+        self._force_cursor_admin = False
+        if attempt.dataset is not None and attempt.status is CollectorStatus.OK:
+            if not attempt.stale:
+                self.cache.put(key, attempt.dataset)
+            return attempt.dataset, False, bool(attempt.stale), attempt.reason
+        if attempt.dataset is not None:
+            return attempt.dataset, False, True, attempt.reason
+        return None, False, False, attempt.reason
 
     def _finish_dataset(
         self,
@@ -501,13 +554,27 @@ class UsageService:
         cost_estimator: ModelCostEstimator | None,
         billing_kind: Any,
         from_cache: bool,
+        stale: bool = False,
+        error_reason: str | None = None,
     ) -> UsageLoadResult:
         if dataset is None:
             if normalized_provider == "cursor":
+                reason = error_reason or (
+                    "Exact account-wide cumulative usage requires an admin ledger or an attributable Cursor export."
+                )
+                status = (
+                    UsageLoadStatus.ERROR
+                    if error_reason
+                    and (
+                        "admin" in error_reason.casefold()
+                        or "authorization" in error_reason.casefold()
+                    )
+                    else UsageLoadStatus.UNSUPPORTED
+                )
                 return UsageLoadResult(
                     normalized_provider,
-                    UsageLoadStatus.UNSUPPORTED,
-                    reason="Exact account-wide cumulative usage requires an admin ledger or an attributable Cursor export.",
+                    status,
+                    reason=reason,
                 )
             return UsageLoadResult(
                 normalized_provider,
@@ -516,6 +583,8 @@ class UsageService:
             )
 
         status, reason = _coverage_status(dataset)
+        if stale:
+            reason = error_reason or reason or "Serving last-known-good Cursor Admin cache."
         if status is UsageLoadStatus.UNAVAILABLE:
             return UsageLoadResult(
                 normalized_provider,
@@ -583,6 +652,7 @@ class UsageService:
             period_costs=period_costs,
             reason=reason,
             from_cache=from_cache,
+            stale=stale,
         )
 
 
@@ -592,6 +662,9 @@ class CumulativeUsageService:
     def __init__(self, cache_seconds: float = 30.0) -> None:
         self.loader = UsageService(UsageDatasetCache(cache_seconds))
         self.fx = None
+
+    def invalidate(self, *, force_admin: bool = False) -> None:
+        self.loader.invalidate(force_admin=force_admin)
 
     @staticmethod
     def _custom_pricing_scope(account: AccountRef) -> bool:
@@ -686,9 +759,28 @@ class CumulativeUsageService:
                 account.provider,
                 account.source_path,
                 account_id=account.account_id,
+                account_email=account.extra.get("email") or None,
             )
         if not result.available or result.report is None:
-            cursor_blocked = account.provider == "cursor"
+            cursor_unsupported = (
+                account.provider == "cursor"
+                and result.status is UsageLoadStatus.UNSUPPORTED
+            )
+            source_kind = ""
+            if result.dataset is not None and result.dataset.coverages:
+                source_kind = result.dataset.coverages[0].source_kind.value
+            if account.provider == "cursor" and source_kind == "cursor_admin":
+                return CumulativeSnapshot(
+                    provider=account.provider,
+                    account_id=account.account_id,
+                    display_name=account.display_name,
+                    plan=account.plan,
+                    report=None,
+                    status="unavailable",
+                    source_label="CURSOR ADMIN",
+                    period=selected_period,
+                    error=result.reason or ADMIN_EMPTY_REASON,
+                )
             return CumulativeSnapshot(
                 provider=account.provider,
                 account_id=account.account_id,
@@ -697,20 +789,20 @@ class CumulativeUsageService:
                 report=None,
                 status=(
                     "unsupported"
-                    if result.status is UsageLoadStatus.UNSUPPORTED or cursor_blocked
+                    if result.status is UsageLoadStatus.UNSUPPORTED or cursor_unsupported
                     else "error"
                     if result.status is UsageLoadStatus.ERROR
                     else "unavailable"
                 ),
                 source_label=(
                     "ADMIN API REQUIRED"
-                    if cursor_blocked
+                    if cursor_unsupported
                     else "LOCAL HISTORY"
                 ),
                 period=selected_period,
                 error=(
                     "Exact account-wide cumulative usage requires an admin ledger."
-                    if cursor_blocked and result.status is UsageLoadStatus.UNSUPPORTED
+                    if cursor_unsupported
                     else result.reason
                 ),
             )
@@ -740,7 +832,21 @@ class CumulativeUsageService:
         if result.dataset is not None and result.dataset.coverages:
             source_kind = result.dataset.coverages[0].source_kind.value
         if account.provider == "cursor":
-            source_label = "CURSOR PARTIAL" if partial else "CURSOR EXPORT"
+            if source_kind == "cursor_admin":
+                source_label = (
+                    "CURSOR ADMIN STALE"
+                    if result.stale
+                    else "CURSOR ADMIN PARTIAL"
+                    if partial
+                    else "CURSOR ADMIN"
+                )
+            elif (
+                self.loader.collector is not None
+                and self.loader.collector.gui_csv_for(account.account_id) is not None
+            ):
+                source_label = "CURSOR CSV PARTIAL" if partial else "CURSOR CSV"
+            else:
+                source_label = "CURSOR PARTIAL" if partial else "CURSOR EXPORT"
         elif source_kind == "token_stats":
             source_label = "TOKEN-STATS PARTIAL" if partial else "TOKEN-STATS"
         elif source_kind == "ccusage":
@@ -753,7 +859,7 @@ class CumulativeUsageService:
             display_name=account.display_name,
             plan=account.plan,
             report=result.report,
-            status="partial" if partial else "ok",
+            status="stale" if result.stale else "partial" if partial else "ok",
             source_label=source_label,
             period=selected_period,
             this_cost_usd=(

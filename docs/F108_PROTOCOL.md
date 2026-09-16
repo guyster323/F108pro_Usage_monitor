@@ -22,7 +22,12 @@ Never send LCD pages as SET_REPORT control transfers — that crashes firmware.
 4. `04 02` apply (readback). Device writes SPI flash (~3 s).
 ## Payload
 
-- 256-byte header: `byte[0]=frame_count`, `byte[1+i]=delay_ms/20`, rest `0xFF`. Every delay must already be an exact 20ms tick in the 20–5,100ms range.
+- 256-byte header: `byte[0]=frame_count`, `byte[1+i]=logical_ms/4`, rest `0xFF`.
+- Official `parsiya/f108-pro` mkimage writes `GIF_centiseconds / 2`, which equals `logical_ms / 20`. That is a GIF packing formula, not the LCD timer quantum.
+- Connected F108 Pro playback of those bytes is 5× faster than a 20 ms interpretation (5 s configured → ~1 s on the LCD). QuotaDeck therefore treats the firmware tick as **4 ms** (`20 / 5`). Hardware duration = `delay_byte × 4 ms`, max 255 × 4 = **1,020 ms** per frame.
+- GUI preview and GIF export keep millisecond durations on an exact **20 ms** logical grid (lcm of the 4 ms firmware tick and GIF centiseconds) so a 5-second account slot stays 5 seconds in Preview and 5 seconds after HID encode.
+- Every logical delay must already be an exact 20 ms tick in the 20–1,020 ms range. Never exceed **141 frames**; slot 0 is the factory GIF.
+- Empty quota playlists and all-hidden cumulative playlists use a repeated idle card whose Preview total stays **2,000 ms**. A single 2,000 ms frame cannot encode (max 1,020 ms), so the renderer emits two 1,000 ms frames. Preview milliseconds and firmware `delay_byte × 4` both sum to 2,000 ms.
 - Each frame: 240×135 RGB565 little-endian (64,800 bytes)
 - Pad to a multiple of 4096 with `0xFF`
 - Hard maximum **141 frames**. Firmware does not bound-check; overflow corrupts menu graphics.

@@ -17,7 +17,7 @@ from quotadeck.config import (
 )
 from quotadeck.core.flashbudget import FlashBudget, lock_flash_state
 from quotadeck.core.mask import mask_text, safe_display_text
-from quotadeck.devices.aula_f108.constants import LCD_MAX_FRAMES
+from quotadeck.devices.aula_f108.constants import LCD_DEFAULT_BUDGET, LCD_MAX_FRAMES
 from quotadeck.devices.aula_f108.device import aula_software_running, enumerate_interfaces, wired_mode_ok
 from quotadeck.devices.aula_f108.payload import Frame, hex_to_rgb, solid_frame
 from quotadeck.discovery.accounts import discover_accounts
@@ -632,7 +632,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_ren.add_argument("--fixture")
     p_ren.add_argument("--out", default="preview.gif")
     p_ren.add_argument("--theme")
-    p_ren.add_argument("--budget", default="32")
+    p_ren.add_argument("--budget", default=str(LCD_DEFAULT_BUDGET))
     p_ren.add_argument(
         "--metric",
         choices=("quota", "cumulative"),

@@ -26,6 +26,7 @@ class CursorProvider(Provider):
                     email_local=local,
                     source_kind=auth.source_kind,
                     source_label=auth.source_label,
+                    extra={"email": auth.email or ""},
                 )
             )
         return accounts
