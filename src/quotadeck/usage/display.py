@@ -21,6 +21,27 @@ CumulativeStatus = Literal[
     "ok", "partial", "unavailable", "unsupported", "error", "stale"
 ]
 
+NO_AVG_LABEL = "NO AVG"
+
+
+@dataclass(frozen=True, slots=True)
+class AverageGapReason:
+    """Why THIS can be shown while AVG must stay N/A/--."""
+
+    period: UsagePeriod
+    history_periods: int
+    minimum_history_periods: int
+    current_complete: bool
+    history_estimated: bool = False
+    estimated_history_periods: int = 0
+
+    @property
+    def completed_history_periods(self) -> int:
+        """Completed past periods only. Estimated partial months are excluded."""
+
+        return self.history_periods
+
+
 CUMULATIVE_SPRITE_STATES: dict[UsageIntensity, str] = {
     UsageIntensity.INSUFFICIENT_HISTORY: "usage_similar",
     UsageIntensity.BELOW_AVERAGE: "usage_below",
@@ -223,15 +244,89 @@ class CumulativeSnapshot:
         assert self.intensity is not None
         return intensity_sprite_state(self.intensity)
 
+    def _gap_from_period(self, selected: PeriodUsageComparison) -> AverageGapReason:
+        estimated = int(bool(selected.history_estimated))
+        completed = max(0, selected.history_periods - estimated)
+        return AverageGapReason(
+            period=selected.period,
+            history_periods=completed,
+            minimum_history_periods=selected.minimum_history_periods,
+            current_complete=selected.current_complete,
+            history_estimated=selected.history_estimated,
+            estimated_history_periods=estimated,
+        )
+
+    def _gap_from_today_comparison(self) -> AverageGapReason | None:
+        if self.period is not UsagePeriod.DAILY or self.report is None:
+            return None
+        today = self.report.today_comparison
+        return AverageGapReason(
+            period=UsagePeriod.DAILY,
+            history_periods=today.history_days,
+            minimum_history_periods=today.minimum_history_days,
+            current_complete=True,
+        )
+
+    @property
+    def average_gap_reason(self) -> AverageGapReason | None:
+        """Structured reason when AVG cannot be formed from completed history."""
+
+        if not self.available or self.average_tokens is not None:
+            return None
+        selected = self.period_comparison
+        if selected is not None:
+            return self._gap_from_period(selected)
+        return self._gap_from_today_comparison()
+
+    def average_gap_i18n_parts(self) -> tuple[tuple[str, dict[str, object]], ...]:
+        """i18n key/kwargs pairs explaining a missing AVG."""
+
+        reason = self.average_gap_reason
+        if reason is None:
+            return ()
+        if reason.period is UsagePeriod.DAILY:
+            return (
+                (
+                    "avg_missing_daily",
+                    {
+                        "have": reason.history_periods,
+                        "need": reason.minimum_history_periods,
+                    },
+                ),
+            )
+        complete_key = (
+            "avg_missing_current_complete"
+            if reason.current_complete
+            else "avg_missing_current_incomplete"
+        )
+        parts: list[tuple[str, dict[str, object]]] = [
+            (
+                "avg_missing_monthly",
+                {
+                    "have": reason.history_periods,
+                    "need": reason.minimum_history_periods,
+                },
+            )
+        ]
+        if reason.history_estimated and reason.estimated_history_periods:
+            parts.append(
+                (
+                    "avg_missing_estimated_month",
+                    {"estimated": reason.estimated_history_periods},
+                )
+            )
+        parts.append((complete_key, {}))
+        return tuple(parts)
+
     @property
     def comparison_display(self) -> str:
         if not self.available:
             return "N/A"
         if self.intensity is UsageIntensity.INSUFFICIENT_HISTORY:
-            return "PARTIAL" if self.status == "partial" else "BUILD"
+            return "PARTIAL" if self.status == "partial" else NO_AVG_LABEL
         ratio = self.ratio
         if ratio is None or ratio != ratio or ratio < 0:
-            return "PARTIAL" if self.status == "partial" else "BUILD"
+            return "PARTIAL" if self.status == "partial" else NO_AVG_LABEL
         if not isfinite(ratio):
             text = "3X+"
         elif ratio >= 10:

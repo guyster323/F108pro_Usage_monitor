@@ -129,7 +129,7 @@ def test_legacy_config_migrates_to_quota_and_current_version(tmp_path: Path) -> 
 
     save_config(config, source)
     saved = json.loads(source.read_text(encoding="utf-8"))
-    assert saved["config_version"] == CONFIG_VERSION == 7
+    assert saved["config_version"] == CONFIG_VERSION == 8
     assert saved["metric_mode"] == "quota"
     assert saved["cumulative_period"] == "monthly"
     assert saved["cost_currency"] == "krw"
@@ -283,7 +283,18 @@ def test_partial_without_ratio_falls_back_to_stale_sprite() -> None:
         status="partial",
     )
     assert snapshot.sprite_state == "stale"
+    assert snapshot.comparison_display == "PARTIAL"
     assert cumulative_bar_caption(snapshot, CostCurrency.KRW) == "D PARTIAL"
+
+
+def test_available_insufficient_history_uses_no_avg_not_build() -> None:
+    snapshot = _snapshot(UsageIntensity.INSUFFICIENT_HISTORY, None)
+    assert snapshot.available
+    assert snapshot.average_tokens is None
+    assert snapshot.comparison_display == "NO AVG"
+    assert cumulative_bar_caption(snapshot, CostCurrency.KRW) == "D NO AVG"
+    assert "BUILD" not in snapshot.comparison_display
+    assert "BUILD" not in cumulative_bar_caption(snapshot, CostCurrency.USD)
 
 
 def test_partial_collapsed_playlist_requests_knocked_down_sprite(monkeypatch) -> None:
@@ -310,7 +321,7 @@ def test_partial_collapsed_playlist_requests_knocked_down_sprite(monkeypatch) ->
         period=UsagePeriod.MONTHLY,
         status="partial",
     )
-    frames = render_cumulative_playlist([snapshot], Path("unused"), frame_budget=8)
+    frames = render_cumulative_playlist([snapshot], Path("unused"), frame_budget=10)
     assert frames
     assert "usage_300" in seen
     assert "stale" not in seen
@@ -567,7 +578,7 @@ def test_cumulative_renderer_asks_theme_for_each_reaction(monkeypatch) -> None:
         snapshots,
         Path("unused"),
         mode=DisplayMode.FIXED,
-        frame_budget=10,
+        frame_budget=20,
         hold_ms=2_000,
     )
     assert requested == [
@@ -577,7 +588,7 @@ def test_cumulative_renderer_asks_theme_for_each_reaction(monkeypatch) -> None:
         "usage_200",
         "usage_300",
     ]
-    assert len(frames) == 10
+    assert len(frames) == 20
     assert all(frame.image.size == (240, 135) for frame in frames)
 
 
@@ -749,9 +760,9 @@ def test_only_unsupported_cursor_playlist_returns_idle_frame(monkeypatch) -> Non
     from quotadeck.devices.aula_f108.payload import build_payload, payload_duration_ms
 
     assert painted == ["empty"]
-    assert len(frames) == 2
+    assert len(frames) == 4
     assert all(frame.image.size == (240, 135) for frame in frames)
-    assert all(frame.delay_ms <= 1020 for frame in frames)
+    assert all(frame.delay_ms <= 500 for frame in frames)
     preview_ms = sum(frame.delay_ms for frame in frames)
     assert preview_ms == 2000
     payload = build_payload(frames)
@@ -831,3 +842,213 @@ def test_cli_models_requires_cumulative_mode(capsys) -> None:
 
     assert main(["usage", "--models"]) == 2
     assert "requires --cumulative" in capsys.readouterr().err
+
+
+def _anonymous_seoul_week_v3_csv(path, total: int = 418_491_993) -> None:
+    """Write a PII-free dashboard v3 CSV whose exclusive categories sum to total."""
+
+    days = list(range(11, 18))
+    per_day, remainder = divmod(total, len(days))
+    amounts = [per_day] * (len(days) - 1) + [per_day + remainder]
+    header = (
+        "Date,Cloud Agent ID,Automation ID,Kind,Model,Max Mode,"
+        "Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,"
+        "Output Tokens,Total Tokens,Cost"
+    )
+    lines = [header]
+    for day, amount in zip(days, amounts, strict=True):
+        lines.append(
+            ",".join(
+                (
+                    f"2026-09-{day:02d}T12:00:00+09:00",
+                    f"anon-{day}",
+                    "",
+                    "Included",
+                    "composer",
+                    "No",
+                    str(amount),
+                    str(amount),
+                    "0",
+                    "0",
+                    "999999999",
+                    "Included",
+                )
+            )
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_seoul_week_like_csv_keeps_418m_without_synthesizing_avg(tmp_path: Path) -> None:
+    from quotadeck.app.i18n import tr
+    from quotadeck.usage.cursor_export import parse_cursor_csv_result
+    from quotadeck.usage.models import UsagePeriod
+
+    total = 418_491_993
+    csv_path = tmp_path / "usage.work.csv"
+    _anonymous_seoul_week_v3_csv(csv_path, total)
+    parsed = parse_cursor_csv_result(csv_path, account="work")
+    assert parsed.usable
+    assert parsed.attempt.dataset is not None
+    report = parsed.attempt.dataset.report(
+        today=date(2026, 9, 17),
+        timezone_name="Asia/Seoul",
+    )
+    assert report.tokens.total_tokens == total
+    assert report.start_day == date(2026, 9, 11)
+    assert report.end_day == date(2026, 9, 17)
+
+    monthly = CumulativeSnapshot(
+        provider="cursor",
+        account_id="work",
+        display_name="WORK",
+        report=report,
+        period=UsagePeriod.MONTHLY,
+    )
+    daily = CumulativeSnapshot(
+        provider="cursor",
+        account_id="work",
+        display_name="WORK",
+        report=report,
+        period=UsagePeriod.DAILY,
+    )
+
+    assert monthly.this_tokens == total
+    assert compact_token_count(monthly.this_tokens) == "418M"
+    assert compact_token_pair(monthly.this_tokens, monthly.average_tokens) == (
+        "418M",
+        "--",
+    )
+    assert monthly.average_tokens is None
+    assert monthly.comparison_display == "NO AVG"
+    assert cumulative_bar_caption(monthly, CostCurrency.KRW) == "M NO AVG"
+    monthly_gap = monthly.average_gap_reason
+    assert monthly_gap is not None
+    assert monthly_gap.history_periods == 0
+    assert monthly_gap.minimum_history_periods == 1
+    assert monthly_gap.current_complete is False
+    assert [
+        tr("ko", key, **kwargs) for key, kwargs in monthly.average_gap_i18n_parts()
+    ] == [
+        "월간 완료 과거 월 0/1",
+        "현재 기간이 시작일부터 완전하지 않음",
+    ]
+    assert tr("en", "avg_missing_monthly", have=0, need=1) == (
+        "Monthly completed past months 0/1"
+    )
+
+    daily_cmp = report.comparison(UsagePeriod.DAILY)
+    assert daily_cmp is not None
+    assert daily_cmp.history_periods == 6
+    assert daily.average_tokens is None
+    assert daily.comparison_display == "NO AVG"
+    assert cumulative_bar_caption(daily, CostCurrency.KRW) == "D NO AVG"
+    daily_gap = daily.average_gap_reason
+    assert daily_gap is not None
+    assert daily_gap.history_periods == 6
+    assert daily_gap.minimum_history_periods == 7
+    assert tr("ko", "avg_missing_daily", have=6, need=7) == "일간 완료 이력 6/7"
+    assert tr("en", "avg_missing_daily", have=6, need=7) == (
+        "Daily completed history 6/7"
+    )
+
+
+def test_legacy_daily_report_builds_gap_reason_from_today_comparison() -> None:
+    from quotadeck.app.i18n import tr
+
+    today_usage = TokenUsage(input_tokens=100)
+    model = ModelUsage("codex", "gpt-5.6-sol", today_usage)
+    report = UsageReport(
+        start_day=date(2026, 9, 11),
+        end_day=date(2026, 9, 17),
+        requested_days=7,
+        daily=(DailyUsage(date(2026, 9, 17), today_usage, (model,)),),
+        model_totals=(model,),
+        tokens=today_usage,
+        today_comparison=UsageComparison(
+            today_tokens=100,
+            prior_daily_average=None,
+            ratio=None,
+            intensity=UsageIntensity.INSUFFICIENT_HISTORY,
+            history_days=3,
+            minimum_history_days=7,
+        ),
+        period_comparisons=(),
+    )
+    snapshot = CumulativeSnapshot(
+        provider="codex",
+        account_id="one",
+        display_name="ONE",
+        report=report,
+        period=UsagePeriod.DAILY,
+    )
+    assert snapshot.comparison_display == "NO AVG"
+    gap = snapshot.average_gap_reason
+    assert gap is not None
+    assert gap.history_periods == 3
+    assert gap.minimum_history_periods == 7
+    assert gap.period is UsagePeriod.DAILY
+    assert [tr("ko", key, **kwargs) for key, kwargs in snapshot.average_gap_i18n_parts()] == [
+        "일간 완료 이력 3/7"
+    ]
+    assert [tr("en", key, **kwargs) for key, kwargs in snapshot.average_gap_i18n_parts()] == [
+        "Daily completed history 3/7"
+    ]
+
+
+def test_estimated_month_is_not_counted_as_completed_history() -> None:
+    from datetime import datetime, timezone
+
+    from quotadeck.app.i18n import tr
+    from quotadeck.usage.analytics import build_usage_report
+    from quotadeck.usage.models import UsageObservation
+
+    observations = (
+        UsageObservation(
+            provider="codex",
+            model="composer",
+            observed_at=datetime(2026, 8, 15, tzinfo=timezone.utc),
+            tokens=TokenUsage(input_tokens=100),
+            session_id="aug",
+            event_id="aug",
+        ),
+        UsageObservation(
+            provider="codex",
+            model="composer",
+            observed_at=datetime(2026, 9, 5, tzinfo=timezone.utc),
+            tokens=TokenUsage(input_tokens=50),
+            session_id="sep",
+            event_id="sep",
+        ),
+    )
+    report = build_usage_report(
+        observations,
+        today=date(2026, 9, 17),
+        timezone_name="UTC",
+        minimum_history_months=2,
+    )
+    monthly = CumulativeSnapshot(
+        provider="codex",
+        account_id="one",
+        display_name="ONE",
+        report=report,
+        period=UsagePeriod.MONTHLY,
+    )
+    selected = monthly.period_comparison
+    assert selected is not None
+    assert selected.history_estimated
+    assert selected.history_periods == 1
+    assert monthly.average_tokens is None
+    assert monthly.comparison_display == "NO AVG"
+    assert cumulative_bar_caption(monthly, CostCurrency.KRW) == "M NO AVG"
+    gap = monthly.average_gap_reason
+    assert gap is not None
+    assert gap.history_periods == 0
+    assert gap.estimated_history_periods == 1
+    assert gap.history_estimated
+    assert gap.minimum_history_periods == 2
+    parts = [tr("ko", key, **kwargs) for key, kwargs in monthly.average_gap_i18n_parts()]
+    assert parts[0] == "월간 완료 과거 월 0/2"
+    assert "추정 부분 월 1개는 완료 과거 월이 아닙니다" in parts
+    en_parts = [tr("en", key, **kwargs) for key, kwargs in monthly.average_gap_i18n_parts()]
+    assert en_parts[0] == "Monthly completed past months 0/2"
+    assert "estimated partial month" in en_parts[1]

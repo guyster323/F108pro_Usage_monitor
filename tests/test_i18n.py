@@ -33,3 +33,20 @@ def test_flash_and_fx_copy_distinguishes_active_hours_and_treasury_rate() -> Non
 
 def test_korean_and_english_tables_share_the_same_keys() -> None:
     assert set(STRINGS["ko"]) == set(STRINGS["en"])
+
+
+def test_avg_missing_copy_states_history_thresholds() -> None:
+    assert tr("ko", "avg_missing_daily", have=6, need=7) == "일간 완료 이력 6/7"
+    assert tr("en", "avg_missing_daily", have=6, need=7) == (
+        "Daily completed history 6/7"
+    )
+    assert "0/1" in tr("ko", "avg_missing_monthly", have=0, need=1)
+    assert "0/1" in tr("en", "avg_missing_monthly", have=0, need=1)
+    assert tr("ko", "avg_missing_current_incomplete")
+    assert tr("en", "avg_missing_current_incomplete")
+    assert tr("ko", "avg_missing_estimated_month", estimated=1) == (
+        "추정 부분 월 1개는 완료 과거 월이 아닙니다"
+    )
+    assert "completed past months" in tr("en", "avg_missing_estimated_month", estimated=1)
+    assert "141" in tr("ko", "playlist_budget_impossible", count=8, hold=20, required=320, limit=141)
+    assert "141" in tr("en", "playlist_budget_impossible", count=8, hold=20, required=320, limit=141)

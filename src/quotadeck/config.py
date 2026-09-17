@@ -13,12 +13,13 @@ from quotadeck.devices.aula_f108.constants import (
     LCD_MAX_FRAMES,
     LCD_SOFT_CAP,
     LEGACY_HIDDEN_FRAME_BUDGET,
+    V7_DEFAULT_FRAME_BUDGET,
 )
 
 if TYPE_CHECKING:
     from quotadeck.usage.models import CostCurrency, UsagePeriod
 
-CONFIG_VERSION = 7
+CONFIG_VERSION = 8
 DEFAULT_SCENE_HOLD_SECONDS = 5
 MIN_UPLOAD_MINUTES = 1
 MAX_UPLOAD_MINUTES = 120
@@ -51,7 +52,7 @@ def clamp_usd_to_krw_rate(value: object) -> float:
 
 
 def clamp_frame_budget(value: object) -> int:
-    """Keep the hidden playlist budget inside the soft cap and hard limit."""
+    """Keep the hidden playlist budget inside the 141-frame hard limit."""
 
     try:
         parsed = int(value)
@@ -74,6 +75,8 @@ def _frame_budget(raw: dict) -> int:
     except (TypeError, ValueError, OverflowError):
         return LCD_DEFAULT_BUDGET
     if stored_version < 7 and parsed == LEGACY_HIDDEN_FRAME_BUDGET:
+        return LCD_DEFAULT_BUDGET
+    if stored_version < 8 and parsed == V7_DEFAULT_FRAME_BUDGET:
         return LCD_DEFAULT_BUDGET
     return clamp_frame_budget(parsed)
 
@@ -390,7 +393,7 @@ def load_config(path: Path | None = None) -> AppConfig:
     # Configs through v3 did not contain metric_mode. They continue to show
     # remaining quota until the user deliberately selects cumulative usage.
     metric_mode = _metric_mode(raw.get("metric_mode", MetricMode.QUOTA.value))
-    return AppConfig(
+    config = AppConfig(
         accounts=accounts,
         display_mode=mode,
         metric_mode=metric_mode,
@@ -412,9 +415,26 @@ def load_config(path: Path | None = None) -> AppConfig:
         config_version=CONFIG_VERSION,
         cursor_bindings=_cursor_bindings_from_raw(raw.get("cursor_bindings")),
     )
+    from quotadeck.renderer.budget import apply_feasible_frame_budget
 
-def save_config(config: AppConfig, path: Path | None = None) -> Path:
+    apply_feasible_frame_budget(config)
+    return config
+
+def save_config(
+    config: AppConfig,
+    path: Path | None = None,
+    *,
+    validate_playlist: bool = True,
+) -> Path:
     target = path or default_config_path()
+    if validate_playlist:
+        from quotadeck.renderer.budget import (
+            apply_feasible_frame_budget,
+            validate_playlist_budget,
+        )
+
+        apply_feasible_frame_budget(config)
+        validate_playlist_budget(config)
     payload = asdict(config)
     payload["display_mode"] = config.display_mode.value
     payload["metric_mode"] = config.metric_mode.value

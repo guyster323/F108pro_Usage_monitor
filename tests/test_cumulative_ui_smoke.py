@@ -128,7 +128,7 @@ def test_v4_config_migrates_period_currency_and_manual_rate(tmp_path) -> None:
     config.usd_to_krw_rate = float("inf")
     save_config(config, path)
     saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved["config_version"] == CONFIG_VERSION == 7
+    assert saved["config_version"] == CONFIG_VERSION == 8
     assert saved["cumulative_period"] == "monthly"
     assert saved["cost_currency"] == "krw"
     assert saved["usd_to_krw_rate"] == 1400.0
@@ -202,6 +202,120 @@ def test_account_row_switches_from_percent_to_cumulative_tokens() -> None:
         usd_to_krw_rate=1400.0,
     )
     assert "LIST KRW (만원) THIS" in row.meta.toolTip()
+    assert app is not None
+
+
+def test_account_row_tooltip_explains_missing_monthly_avg() -> None:
+    from datetime import date, datetime
+    from zoneinfo import ZoneInfo
+
+    from PySide6.QtWidgets import QApplication
+
+    from quotadeck.app.main_window import AccountRow
+    from quotadeck.config import AccountConfig
+    from quotadeck.usage.analytics import build_usage_report
+    from quotadeck.usage.display import CumulativeSnapshot
+    from quotadeck.usage.models import TokenUsage, UsageObservation, UsagePeriod
+
+    app = QApplication.instance() or QApplication([])
+    row = AccountRow(AccountConfig("cursor", "work", "WORK"))
+    seoul = ZoneInfo("Asia/Seoul")
+    total = 418_491_993
+    report = build_usage_report(
+        (
+            UsageObservation(
+                provider="cursor",
+                model="composer",
+                observed_at=datetime(2026, 9, 11, 12, tzinfo=seoul),
+                tokens=TokenUsage(input_tokens=total),
+                session_id="week",
+                event_id="evt-0",
+            ),
+        ),
+        today=date(2026, 9, 17),
+        timezone_name="Asia/Seoul",
+    )
+    snapshot = CumulativeSnapshot(
+        provider="cursor",
+        account_id="work",
+        display_name="WORK",
+        report=report,
+        period=UsagePeriod.MONTHLY,
+    )
+    row.set_snapshot(snapshot)
+    assert row.meta.text() == "418M / N/A · NO AVG"
+    tip = row.meta.toolTip()
+    assert "AVG N/A (NO AVG)" in tip
+    assert "월간 완료 과거 월 0/1" in tip
+    assert "현재 기간이 시작일부터 완전하지 않음" in tip
+    row.apply_language("en")
+    en_tip = row.meta.toolTip()
+    assert row.meta.text() == "418M / N/A · NO AVG"
+    assert "Monthly completed past months 0/1" in en_tip
+    assert "Current period is not complete from its start" in en_tip
+    assert "월간 완료" not in en_tip
+    row.apply_language("ko")
+    ko_tip = row.meta.toolTip()
+    assert row.meta.text() == "418M / N/A · NO AVG"
+    assert "월간 완료 과거 월 0/1" in ko_tip
+    assert "Monthly completed" not in ko_tip
+    assert app is not None
+
+
+def test_legacy_daily_tooltip_switches_language_without_losing_card() -> None:
+    from datetime import date
+
+    from PySide6.QtWidgets import QApplication
+
+    from quotadeck.app.main_window import AccountRow
+    from quotadeck.config import AccountConfig
+    from quotadeck.usage.display import CumulativeSnapshot
+    from quotadeck.usage.models import (
+        DailyUsage,
+        TokenUsage,
+        UsageComparison,
+        UsageIntensity,
+        UsagePeriod,
+        UsageReport,
+    )
+
+    app = QApplication.instance() or QApplication([])
+    row = AccountRow(AccountConfig("codex", "one", "ONE"))
+    today_usage = TokenUsage(input_tokens=100)
+    report = UsageReport(
+        start_day=date(2026, 9, 11),
+        end_day=date(2026, 9, 17),
+        requested_days=7,
+        daily=(DailyUsage(date(2026, 9, 17), today_usage),),
+        model_totals=(),
+        tokens=today_usage,
+        today_comparison=UsageComparison(
+            today_tokens=100,
+            prior_daily_average=None,
+            ratio=None,
+            intensity=UsageIntensity.INSUFFICIENT_HISTORY,
+            history_days=3,
+            minimum_history_days=7,
+        ),
+        period_comparisons=(),
+    )
+    snapshot = CumulativeSnapshot(
+        provider="codex",
+        account_id="one",
+        display_name="ONE",
+        report=report,
+        period=UsagePeriod.DAILY,
+    )
+    row.set_snapshot(snapshot)
+    assert "NO AVG" in row.meta.text()
+    assert "일간 완료 이력 3/7" in row.meta.toolTip()
+    row.apply_language("en")
+    assert "NO AVG" in row.meta.text()
+    assert "Daily completed history 3/7" in row.meta.toolTip()
+    assert "일간 완료" not in row.meta.toolTip()
+    row.apply_language("ko")
+    assert "NO AVG" in row.meta.text()
+    assert "일간 완료 이력 3/7" in row.meta.toolTip()
     assert app is not None
 
 

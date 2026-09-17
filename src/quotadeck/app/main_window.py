@@ -68,6 +68,14 @@ from quotadeck.core.severity import worst_severity
 from quotadeck.diagnostics import DiagnosticSession, configure_diagnostics, diagnostic_log_directory
 from quotadeck.devices.aula_f108.device import aula_software_running, enumerate_interfaces, wired_mode_ok
 from quotadeck.discovery.accounts import discover_accounts
+from quotadeck.devices.aula_f108.constants import LCD_DEFAULT_BUDGET, LCD_MAX_FRAMES
+from quotadeck.devices.aula_f108.payload import payload_padded_size
+from quotadeck.renderer.budget import (
+    SceneBudgetError,
+    enabled_account_count,
+    playlist_budget_kwargs,
+    required_playlist_frames,
+)
 from quotadeck.renderer.layout import compact_cost_pair, compact_token_count
 from quotadeck.usage.display import CumulativeSnapshot
 from quotadeck.usage.models import CostCurrency, UsagePeriod
@@ -172,6 +180,16 @@ def cycle_seconds(account_count: int, hold_seconds: int) -> int:
     return max(0, int(account_count)) * max(0, int(hold_seconds))
 
 
+def playlist_budget_message(lang: str, error: SceneBudgetError) -> str:
+    return tr(lang, "playlist_budget_impossible", **playlist_budget_kwargs(error))
+
+
+def _worker_failure_text(exc: BaseException, lang: str) -> str:
+    if isinstance(exc, SceneBudgetError):
+        return playlist_budget_message(lang, exc)
+    return mask_text(str(exc))
+
+
 def _wrap_with_hint(control: QWidget, hint: HintButton) -> QWidget:
     row = QWidget()
     layout = QHBoxLayout(row)
@@ -214,7 +232,8 @@ class Worker(QThread):
                 "event=worker_exception kind=upload duration_ms=%d",
                 int((time.monotonic() - started) * 1000),
             )
-            self.failed.emit(mask_text(str(exc)))
+            lang = getattr(getattr(self.runtime, "config", None), "ui_language", "ko")
+            self.failed.emit(_worker_failure_text(exc, lang))
 
 
 class PreviewWorker(QThread):
@@ -243,7 +262,8 @@ class PreviewWorker(QThread):
                 "event=worker_exception kind=preview duration_ms=%d",
                 int((time.monotonic() - started) * 1000),
             )
-            self.failed.emit(mask_text(str(exc)))
+            lang = getattr(getattr(self.runtime, "config", None), "ui_language", "ko")
+            self.failed.emit(_worker_failure_text(exc, lang))
 
 class CursorAdminConnectWorker(QThread):
     succeeded = Signal(str, str)
@@ -300,6 +320,10 @@ class AccountRow(QWidget):
         self.account = account
         self._lang = "ko"
         self._source = ""
+        self._has_display = False
+        self._last_snapshot: UsageSnapshot | CumulativeSnapshot | None = None
+        self._last_currency = CostCurrency.USD
+        self._last_usd_to_krw_rate = 1400.0
         layout = QHBoxLayout(self)
         layout.setContentsMargins(6, 4, 6, 4)
         self.check = QCheckBox(account.provider.upper())
@@ -349,6 +373,8 @@ class AccountRow(QWidget):
     def apply_language(self, lang: str, *, source: str = "") -> None:
         self._lang = "en" if lang == "en" else "ko"
         self._refresh_cursor_actions(source)
+        if self._has_display:
+            self._render_snapshot()
 
     def set_actions_enabled(self, enabled: bool) -> None:
         self.actions_btn.setEnabled(enabled)
@@ -482,6 +508,9 @@ class AccountRow(QWidget):
         return sorted(totals.items(), key=lambda item: (-item[1], item[0].casefold()))
 
     def set_usage(self, snapshot: UsageSnapshot | None) -> None:
+        self._render_usage(snapshot)
+
+    def _render_usage(self, snapshot: UsageSnapshot | None) -> None:
         self._reset_display()
         if snapshot is None:
             return
@@ -520,8 +549,20 @@ class AccountRow(QWidget):
         usd_to_krw_rate: float = 1400.0,
         krw_cost_label: str = "KRW (만원)",
     ) -> None:
+        del krw_cost_label  # Language-aware label is resolved at render time.
+        self._has_display = True
+        self._last_snapshot = snapshot
+        self._last_currency = currency
+        self._last_usd_to_krw_rate = usd_to_krw_rate
+        self._render_snapshot()
+
+    def _render_snapshot(self) -> None:
+        snapshot = self._last_snapshot
+        currency = self._last_currency
+        usd_to_krw_rate = self._last_usd_to_krw_rate
+        krw_cost_label = tr(self._lang, "currency_krw")
         if not isinstance(snapshot, CumulativeSnapshot):
-            self.set_usage(snapshot)
+            self._render_usage(snapshot)
             return
         self._reset_display()
         if not snapshot.available:
@@ -567,8 +608,14 @@ class AccountRow(QWidget):
             f"THIS {compact_token_count(current_tokens)}",
             f"AVG {average} ({snapshot.comparison_display})",
         ]
+        for key, kwargs in snapshot.average_gap_i18n_parts():
+            tooltip_lines.append(tr(self._lang, key, **kwargs))
         selected = snapshot.period_comparison
-        if selected is not None and selected.history_estimated:
+        if (
+            selected is not None
+            and selected.history_estimated
+            and average_tokens is not None
+        ):
             tooltip_lines.append(
                 "AVG EST: FIRST RETAINED PARTIAL MONTH PRORATED BY CALENDAR DAYS"
             )
@@ -625,6 +672,7 @@ class MainWindow(QMainWindow):
         self.rows: list[AccountRow] = []
         self._busy = False
         self._display_refresh_pending = False
+        self._playlist_infeasible = False
         self.tray_show = None
         self.tray_upload = None
         self.tray_logs = None
@@ -1003,9 +1051,46 @@ class MainWindow(QMainWindow):
         cycle = cycle_seconds(enabled, hold)
         self.hold_cycle.setText(self._t("hold_cycle", hold=hold, cycle=cycle))
         tip = self._t("hold_cycle_tip", hold=hold, count=enabled, cycle=cycle)
+        planned = self._planned_enabled_count()
+        needed = required_playlist_frames(planned, hold * 1000)
+        was_blocked = self._playlist_infeasible
+        if needed > LCD_MAX_FRAMES:
+            self._playlist_infeasible = True
+            tip = "\n".join(
+                (
+                    tip,
+                    self._t(
+                        "playlist_budget_impossible",
+                        count=planned,
+                        hold=hold,
+                        required=needed,
+                        limit=LCD_MAX_FRAMES,
+                    ),
+                )
+            )
+        else:
+            self._playlist_infeasible = False
+            extra = [self._t("playlist_budget_hint")]
+            if needed > LCD_DEFAULT_BUDGET:
+                extra.append(
+                    self._t(
+                        "playlist_budget_payload",
+                        required=needed,
+                        megabytes=f"{payload_padded_size(needed) / 1_000_000:.1f}",
+                    )
+                )
+            tip = "\n".join((tip, *extra))
+            if was_blocked:
+                self._schedule_refresh(0)
         self.hold_cycle.setToolTip(tip)
         self.hold.setToolTip(f"{self._t('hold_tip')}\n{tip}")
         self.hold_hint.apply_copy(self._t("hint_clock"), f"{self._t('hold_tip')}\n{tip}")
+
+    def _planned_enabled_count(self) -> int:
+        """Enabled cards including unconnected Cursor that may appear later."""
+
+        checked = [row.to_config() for row in self.rows if row.check.isChecked()]
+        return enabled_account_count(checked)
 
     def _lcd_enabled_count(self) -> int:
         checked = [row for row in self.rows if row.check.isChecked()]
@@ -1110,6 +1195,8 @@ class MainWindow(QMainWindow):
         if self._busy:
             self._display_refresh_pending = True
             return
+        if self._reject_infeasible_playlist(modal=save):
+            return
         if save:
             if not self.apply():
                 return
@@ -1136,7 +1223,12 @@ class MainWindow(QMainWindow):
         cfg = self.collect_config()
         cfg.ui_language = "en" if self._lang() == "ko" else "ko"
         self.config = cfg
-        save_config(cfg)
+        try:
+            save_config(cfg)
+        except SceneBudgetError:
+            stored = load_config()
+            stored.ui_language = cfg.ui_language
+            save_config(stored, validate_playlist=False)
         self.apply_language()
     def set_busy(self, busy: bool) -> None:
         self._busy = busy
@@ -1211,7 +1303,12 @@ class MainWindow(QMainWindow):
 
     def _refresh_cursor_runtime(self, *, force_admin: bool = False) -> None:
         candidate = self.collect_config()
-        save_config(candidate)
+        try:
+            save_config(candidate)
+        except SceneBudgetError as exc:
+            log.warning("event=cursor_runtime_save_rejected_playlist error=%s", exc)
+            self._playlist_infeasible = True
+            self._show_failure(playlist_budget_message(self._lang(), exc))
         self._adopt_runtime_config(candidate)
         if hasattr(self.runtime.cumulative, "invalidate"):
             self.runtime.cumulative.invalidate(force_admin=force_admin)
@@ -1462,11 +1559,18 @@ class MainWindow(QMainWindow):
     def apply(self) -> bool:
         try:
             candidate = self.collect_config()
+            previous_budget = candidate.frame_budget
             save_config(candidate)
+        except SceneBudgetError as exc:
+            log.warning("event=config_save_rejected_playlist error=%s", exc)
+            self._playlist_infeasible = True
+            self._show_failure(playlist_budget_message(self._lang(), exc))
+            return False
         except Exception as exc:
             log.exception("event=config_save_failed")
             self._show_failure(mask_text(str(exc)))
             return False
+        raised_budget = candidate.frame_budget > previous_budget
         runtime_changed = candidate != self.runtime.config
         if runtime_changed and self._refresh_timer is not None:
             self._refresh_timer.stop()
@@ -1494,9 +1598,17 @@ class MainWindow(QMainWindow):
                 self.config.launch_at_startup,
             )
         self.update_flash_label()
-        self.status.setText(
-            self._t("status_saved") if startup_ok else self._t("status_saved_startup_failed")
-        )
+        saved = self._t("status_saved") if startup_ok else self._t("status_saved_startup_failed")
+        if raised_budget:
+            saved = (
+                f"{saved} · "
+                + self._t(
+                    "playlist_budget_raised",
+                    previous=previous_budget,
+                    budget=candidate.frame_budget,
+                )
+            )
+        self.status.setText(saved)
         log.info(
             "event=config_saved accounts=%d hold_seconds=%d startup=%s startup_ok=%s",
             len(self.config.accounts),
@@ -1521,6 +1633,27 @@ class MainWindow(QMainWindow):
         )
         self._refresh_timer.start(interval)
 
+    def _reject_infeasible_playlist(self, *, modal: bool) -> bool:
+        count = self._planned_enabled_count()
+        hold = self.hold.value()
+        needed = required_playlist_frames(count, hold * 1000)
+        if needed <= LCD_MAX_FRAMES:
+            self._playlist_infeasible = False
+            return False
+        self._playlist_infeasible = True
+        message = self._t(
+            "playlist_budget_impossible",
+            count=count,
+            hold=hold,
+            required=needed,
+            limit=LCD_MAX_FRAMES,
+        )
+        if modal:
+            self._show_failure(message)
+        else:
+            self.status.setText(message)
+        return True
+
     def _automatic_refresh(self) -> None:
         """Poll once and safely attempt a gated upload when hardware is ready."""
 
@@ -1528,6 +1661,8 @@ class MainWindow(QMainWindow):
             return
         if self._busy or self._active_threads:
             self._schedule_refresh()
+            return
+        if self._reject_infeasible_playlist(modal=False):
             return
 
         self.set_busy(True)
@@ -1654,7 +1789,7 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(0, self._quit_now)
             elif self._display_refresh_pending:
                 QTimer.singleShot(0, self._consume_pending_display_refresh)
-            else:
+            elif not self._playlist_infeasible:
                 self._schedule_refresh()
 
     @Slot()
@@ -1745,6 +1880,9 @@ class MainWindow(QMainWindow):
         """Keep scheduled failures visible but non-modal while monitoring."""
 
         log.warning("event=automatic_refresh_failed message=%r", message)
+        lowered = message.casefold()
+        if "141" in message and ("frame" in lowered or "프레임" in message):
+            self._playlist_infeasible = True
         self.status.setText(message)
         if self.runtime.state.last_polled:
             self._apply_snapshots(self.runtime.state.last_polled)

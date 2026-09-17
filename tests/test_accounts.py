@@ -58,7 +58,7 @@ def test_config_defaults_are_sixty_five_ten() -> None:
     assert config.scene_hold_seconds == 5
     assert config.min_upload_minutes == 10
     assert config.fx_auto is True
-    assert config.frame_budget == 48
+    assert config.frame_budget == 80
     assert _hold_seconds({}) == 5
     assert _hold_seconds({"scene_hold_seconds": 4}) == 4
     assert _hold_seconds({"scene_hold_seconds": 10}) == 10
@@ -73,7 +73,7 @@ def test_custom_hold_survives_save_load(tmp_path) -> None:
     save_config(AppConfig(scene_hold_seconds=7), path)
     loaded = load_config(path)
     assert loaded.scene_hold_seconds == 7
-    assert loaded.config_version == CONFIG_VERSION == 7
+    assert loaded.config_version == CONFIG_VERSION == 8
 
 
 def test_minimum_upload_interval_is_clamped_at_config_boundaries(tmp_path) -> None:
@@ -116,7 +116,7 @@ def test_cursor_bindings_migrate_from_older_configs(tmp_path) -> None:
     path.write_text(json.dumps({"config_version": 5, "accounts": []}), encoding="utf-8")
     loaded = load_config(path)
     assert loaded.cursor_bindings == []
-    assert loaded.config_version == CONFIG_VERSION == 7
+    assert loaded.config_version == CONFIG_VERSION == 8
     save_config(
         AppConfig(
             cursor_bindings=[
@@ -146,14 +146,25 @@ def test_legacy_hidden_frame_budget_migrates_to_soft_cap(tmp_path) -> None:
         encoding="utf-8",
     )
     loaded = load_config(path)
-    assert loaded.frame_budget == LCD_DEFAULT_BUDGET == LCD_SOFT_CAP == 48
-    assert loaded.config_version == CONFIG_VERSION == 7
+    assert loaded.frame_budget == LCD_DEFAULT_BUDGET == 80
+    assert LCD_SOFT_CAP == 141
+    assert loaded.config_version == CONFIG_VERSION == 8
     save_config(loaded, path)
     saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved["frame_budget"] == 48
-    assert saved["config_version"] == 7
+    assert saved["frame_budget"] == 80
+    assert saved["config_version"] == 8
     path.write_text(
         json.dumps({"config_version": 6, "frame_budget": 16}),
+        encoding="utf-8",
+    )
+    assert load_config(path).frame_budget == 16
+    path.write_text(
+        json.dumps({"config_version": 7, "frame_budget": 48}),
+        encoding="utf-8",
+    )
+    assert load_config(path).frame_budget == 80
+    path.write_text(
+        json.dumps({"config_version": 7, "frame_budget": 16}),
         encoding="utf-8",
     )
     assert load_config(path).frame_budget == 16
@@ -161,8 +172,13 @@ def test_legacy_hidden_frame_budget_migrates_to_soft_cap(tmp_path) -> None:
         json.dumps({"config_version": 7, "frame_budget": 200}),
         encoding="utf-8",
     )
+    assert load_config(path).frame_budget == 141
+    path.write_text(
+        json.dumps({"config_version": 8, "frame_budget": 48}),
+        encoding="utf-8",
+    )
     assert load_config(path).frame_budget == 48
-    assert AppConfig(frame_budget=141).frame_budget == 48
+    assert AppConfig(frame_budget=141).frame_budget == 141
 
 
 def test_config_ignores_unknown_keys() -> None:
@@ -176,3 +192,100 @@ def test_config_ignores_unknown_keys() -> None:
     )
     assert account.alias == "X"
     assert account.source_kind == "cli"
+
+
+def _enabled_accounts(count: int, provider: str = "codex"):
+    from quotadeck.config import AccountConfig
+
+    return [
+        AccountConfig(provider, f"acct-{index}", f"A{index}", enabled=True)
+        for index in range(count)
+    ]
+
+
+def test_v7_eight_accounts_six_seconds_raises_hidden_budget_to_96(tmp_path) -> None:
+    import json
+
+    from quotadeck.config import load_config, save_config
+    from quotadeck.renderer.budget import allocate, required_playlist_frames
+
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "config_version": 7,
+                "frame_budget": 48,
+                "scene_hold_seconds": 6,
+                "accounts": [
+                    {
+                        "provider": "codex",
+                        "account_id": f"acct-{index}",
+                        "alias": f"A{index}",
+                        "enabled": True,
+                    }
+                    for index in range(8)
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    loaded = load_config(path)
+    assert required_playlist_frames(8, 6000) == 96
+    assert loaded.frame_budget == 96
+    assert loaded.scene_hold_seconds == 6
+    budget = allocate(8, loaded.frame_budget, hold_ms=6000)
+    assert budget.total_frames == 96
+    save_config(loaded, path)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["frame_budget"] == 96
+    assert saved["scene_hold_seconds"] == 6
+    assert load_config(path).frame_budget == 96
+
+
+def test_three_accounts_five_seconds_keep_default_budget_80(tmp_path) -> None:
+    from quotadeck.config import AppConfig, load_config, save_config
+
+    path = tmp_path / "config.json"
+    config = AppConfig(
+        accounts=_enabled_accounts(3),
+        scene_hold_seconds=5,
+        frame_budget=80,
+    )
+    save_config(config, path)
+    assert load_config(path).frame_budget == 80
+
+
+def test_save_rejects_impossible_playlist_before_write(tmp_path) -> None:
+    import json
+
+    import pytest
+
+    from quotadeck.config import AppConfig, save_config
+    from quotadeck.renderer.budget import SceneBudgetError
+
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"config_version": 8, "frame_budget": 80, "scene_hold_seconds": 5}),
+        encoding="utf-8",
+    )
+    before = path.read_text(encoding="utf-8")
+    config = AppConfig(
+        accounts=_enabled_accounts(8),
+        scene_hold_seconds=20,
+        frame_budget=80,
+    )
+    with pytest.raises(SceneBudgetError, match="141"):
+        save_config(config, path)
+    assert path.read_text(encoding="utf-8") == before
+    assert config.frame_budget == 80
+
+
+def test_save_raises_budget_for_nine_accounts_five_seconds(tmp_path) -> None:
+    from quotadeck.config import AppConfig, load_config, save_config
+
+    path = tmp_path / "config.json"
+    save_config(
+        AppConfig(accounts=_enabled_accounts(9), scene_hold_seconds=5, frame_budget=80),
+        path,
+    )
+    assert load_config(path).frame_budget == 90

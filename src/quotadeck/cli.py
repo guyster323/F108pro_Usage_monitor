@@ -23,6 +23,7 @@ from quotadeck.devices.aula_f108.payload import Frame, hex_to_rgb, solid_frame
 from quotadeck.discovery.accounts import discover_accounts
 from quotadeck.gifio import load_gif
 from quotadeck.providers.base import all_providers
+from quotadeck.renderer.budget import SceneBudgetError, playlist_budget_kwargs
 from quotadeck.renderer.encode import write_gif
 from quotadeck.renderer.sprites import validate_theme
 
@@ -86,7 +87,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
     from quotadeck.devices.aula_f108.protocol import upload_payload
     if args.solid:
         r, g, b = hex_to_rgb(args.solid)
-        frames = [solid_frame(r, g, b, delay_ms=1000)]
+        frames = [solid_frame(r, g, b, delay_ms=500)]
     elif args.gif:
         frames = load_gif(Path(args.gif))
     else:
@@ -682,6 +683,19 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         logging.getLogger("quotadeck").info("event=command_interrupted")
         return 130
+    except SceneBudgetError as exc:
+        from quotadeck.app.i18n import tr
+
+        lang = "ko"
+        try:
+            lang = load_config().ui_language
+        except Exception:
+            pass
+        print(
+            tr(lang, "playlist_budget_impossible", **playlist_budget_kwargs(exc)),
+            file=sys.stderr,
+        )
+        return 2
     except Exception as exc:
         logging.getLogger("quotadeck").exception(
             "event=command_failed command=%r",

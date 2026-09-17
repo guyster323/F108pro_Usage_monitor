@@ -25,7 +25,7 @@ retained on this device**, and uploads a 240×135 RGB565 playlist to the AULA
 F108 Pro LCD. Credentials and conversation content stay with the official CLI
 or app.
 
-**v0.2.3 latest:** QuotaDeck now includes period/model token aggregation,
+**v0.2.3 latest (2026-09-17):** QuotaDeck now includes period/model token aggregation,
 partial-month `AVG EST`, automatic KRW FX, and a compact settings UI. Cursor
 can import a Usage CSV without renaming it or connect an Enterprise Team Admin
 API key stored only in Windows Credential Manager. The onboarding dialog opens
@@ -39,11 +39,20 @@ usage events into 10,387 observations with zero malformed records. A PARTIAL
 snapshot with a reliable ratio still uses the five reaction bands, including
 the collapsed character at 300% or above.
 
-Measured F108 Pro playback was five times faster than the old 20 ms
-interpretation, so payload delays now use a 4 ms firmware tick while GUI/GIF
-timing stays on an exact 20 ms logical grid. A configured five-second account
-slot is therefore five seconds in both Preview and the LCD payload. The hidden
-frame budget defaults to 48; legacy 32 values migrate under config v7.
+F108 payload delays follow this user's device observations. The older `/20`
+packing played a configured 5 s slot in about 1 s; the later `/4` packing
+played about 2.5 s. Source now encodes with an observed 2 ms playback unit
+(`delay_byte = logical_ms / 2`). GUI/GIF keep the configured logical
+milliseconds. The per-frame logical max is 500 ms, so eight accounts × 5 s
+need 10 frames each and the hidden default budget is 80. Feasible combinations
+that need 81–141 frames (8×6 s=96, 9×5 s=90, 3×20 s=120) raise the hidden
+budget before save; combinations over 141 frames are rejected before the file
+is written. Larger playlists mean larger HID payloads (80≈5.2MB, 96≈6.2MB,
+141≈9.1MB) and longer upload/flash time. Legacy hidden 32 and the v7 default
+48 migrate to 80 under config v8, then rise further when the account×hold
+combo needs it. This is a user-observation calibration, not a completed
+hardware lab measurement. `dist/QuotaDeck.exe` was rebuilt on 2026-09-17
+with the 2 ms encode, config v8, and `NO AVG` label.
 
 On 2026-09-12, the connected F108 Pro accepted 8 frames (520,192 bytes)
 through the default Win32 backend, with all 127 page ACKs and the final
@@ -65,12 +74,32 @@ bytes when the pixels are unchanged. Independent checks passed for
 The `pyproject.toml` test path includes both `src` and the repository root, so
 both `pytest` and `python -m pytest` collect the regression tests under `tools`.
 
-The latest local integrated run on 2026-09-16 finished with **512 passed,
+The latest local integrated run on 2026-09-17 finished with **524 passed,
 1 skipped, and 8 subtests passed**. Documentation, sprite, frame-budget, and
 packaged-render checks also passed. The one skip is an existing test that
 requires permission to create a Windows directory symlink. The previous
 Windows [CI run](https://github.com/guyster323/F108pro_Usage_monitor/actions/runs/34682870012)
 remains available for reference.
+
+## Changelog
+
+### 2026-09-17
+- Encoded F108 payload delays with this device's observed 2 ms unit (`delay_byte = logical_ms / 2`). The older `/20` packing played about 1 s; `/4` played about 2.5 s.
+- Raised the hidden frame-budget default from 48 to 80 and migrated settings to **config v8**. Feasible 81–141 frame combinations are raised before save; combinations over 141 frames are rejected before the file is written.
+- Replaced `BUILD` with `NO AVG` when completed history cannot form an average, and explained the daily/monthly gap in the GUI tooltip.
+- Rebuilt `dist/QuotaDeck.exe` with the above. A stopwatch check on the connected keyboard is still required.
+- Local integrated validation: **524 passed, 1 skipped, 8 subtests passed**.
+
+### 2026-09-16
+- Added guided Cursor Usage CSV import and Enterprise Team Admin API onboarding. Keys stay in Windows Credential Manager only.
+- Grouped Codex `token_usage_record` files by `thread_id` so sibling threads are not dropped.
+- Added partial-month `AVG EST`, automatic KRW FX (U.S. Treasury quarterly rate → cache → 1,400 KRW/USD), and a compact settings UI.
+- Kept GUI snapshots across metric changes and fetched Cursor/FX data without disabling TLS.
+
+### 2026-09-12
+- Normalized Win32 `GET_FEATURE` 64/65-byte reads and verified an 8-frame upload ACK on a connected F108 Pro.
+- Stopped using Pillow `FASTOCTREE` libc `qsort` tie-breaks so Windows CI matches the 104 committed runtime PNG palettes.
+- Fixed the display-metric combo box shadowing Qt `QPaintDevice.metric()` at GUI startup.
 
 > New here? Follow **Getting started**. Protocol, themes, and security live under [docs/](docs/).
 ## Architecture
@@ -183,8 +212,11 @@ use ASCII `K/M/B`, such as `1K / 2K` when the GUI is set to **KRW (10,000 won)**
 or `0.4K / 0.8K` in USD. The normal bar caption contains only the period and
 baseline (`M AVG` or `D AVG`), while a prorated first month shows `M EST`; the
 LCD intentionally omits currency labels and Hangul. Read-error subtotals keep
-their numeric best-effort comparison under `M/D PARTIAL`. `M/D BUILD` is
-reserved for no historical sample and `M/D N/A` for no attributable ledger.
+their numeric best-effort comparison under `M/D PARTIAL`. `M/D NO AVG` is
+used when completed history is too short to form an average, and `M/D N/A`
+when there is no attributable ledger. `NO AVG` never synthesizes AVG; the
+GUI tooltip shows daily completed history n/7, or monthly completed past
+months n/1 plus whether the current period is complete from its start.
 Model names never appear on the LCD. The desktop account row shows the top two
 models for the selected period, and its tooltip contains the full model list.
 
@@ -225,10 +257,9 @@ hypothetical `LIST` equivalent when coverage is complete.
 ### Windows exe
 
 [dist/QuotaDeck.exe](dist/QuotaDeck.exe) runs without a Python installation.
-It was rebuilt on 2026-09-16 with Cursor onboarding/Admin API, Codex thread
-scanning, partial-month estimates, and 4 ms F108 firmware timing. The packaged
-CLI and a four-account × five-second Preview render were checked; physical LCD
-timing still needs one confirmation on the connected keyboard.
+It was rebuilt on 2026-09-17 with the observed 2 ms LCD encode, config v8
+frame budget 80, and the `NO AVG` label. Confirm playback with a stopwatch
+on the connected keyboard.
 To build your own copy, follow the source instructions below and use `QuotaDeck.spec`.
 
 1. Connect the F108 Pro over **USB-C** and press `Fn+4`.
@@ -269,10 +300,13 @@ In the settings app:
   Every account rotates for the configured time per account.
 - **Upload now** — write the selected accounts to the F108 Pro **user GIF slot**. Buttons lock while the transfer is running.
 
-The current settings schema is **config v7**. It persists period, currency, FX,
+The current settings schema is **config v8**. It persists period, currency, FX,
 and Cursor CSV/Admin binding metadata but never the API key. Older settings
 migrate safely to Monthly, KRW, Auto FX, the 1,400 KRW/USD fallback, and the
-48-frame default budget.
+80-frame default budget. The v7 hidden default 48 is raised to 80; other
+explicit custom budgets are kept and clamped to 1..141. Combinations that
+need more than 80 but at most 141 frames are accepted by raising the hidden
+budget.
 
 Default timings are **60 seconds / 5 seconds / 10 minutes**. They are not the same clock.
 

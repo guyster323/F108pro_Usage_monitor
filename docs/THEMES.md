@@ -75,7 +75,7 @@ source compiler:
 `fps` is currently validated metadata only. It does not control playback
 cadence; account duration and the one-shot secondary pose are driven by the
 20 ms logical/GIF frame delays in `renderer.budget` and `_sprite_index()`.
-Firmware playback uses 4 ms delay bytes; Preview keeps the logical milliseconds.
+Hardware encode uses the observed 2 ms playback unit; Preview keeps the logical milliseconds.
 
 ## Editing safely
 

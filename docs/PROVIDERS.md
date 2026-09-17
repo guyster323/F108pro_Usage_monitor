@@ -57,8 +57,10 @@ but the numeric label preserves over-average meaning and reaches `300%+`.
 Normal captions contain only the period and baseline (`M AVG` or `D AVG`); the
 LCD omits currency labels and Hangul. A prorated first partial month uses
 `M EST`, while read-error subtotals use `M/D PARTIAL` and keep their numeric
-best-effort average. `M/D BUILD` is reserved for no historical sample and
-`M/D N/A` for no attributable ledger.
+best-effort average. `M/D NO AVG` is reserved for insufficient completed
+history and `M/D N/A` for no attributable ledger. The GUI tooltip states the
+daily n/7 or monthly n/1 history gap and whether the current period is
+complete from its start.
 `THIS` and `AVG` token values use one shared compact unit so large pairs remain
 directly comparable (for example, `0.6B / 1.2B`). Model information is GUI-only:
 the account row shows the top two models for the selected period, while its
@@ -156,5 +158,7 @@ Cumulative datasets normalize provider, model, UTC timestamp, mutually
 exclusive token categories, stable event/session IDs, and coverage/limitation
 metadata. Display snapshots select a daily or monthly `THIS`/`AVG` comparison,
 selected-period model totals, status, and an optional all-or-nothing cost pair.
-The settings schema is **config v5** and persists the selected period, currency,
-and manual USD-to-KRW rate.
+The settings schema is **config v8** and persists the selected period, currency,
+FX source, Cursor CSV/Admin binding metadata, and the hidden frame budget. It
+never stores Admin API keys. Older configs migrate to Monthly, KRW, Auto FX,
+the 1,400 KRW/USD fallback, and frame budget 80.
