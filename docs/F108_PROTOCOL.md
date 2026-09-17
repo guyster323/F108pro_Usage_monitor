@@ -22,15 +22,16 @@ Never send LCD pages as SET_REPORT control transfers — that crashes firmware.
 4. `04 02` apply (readback). Device writes SPI flash (~3 s).
 ## Payload
 
-- 256-byte header: `byte[0]=frame_count`, `byte[1+i]=logical_ms/4`, rest `0xFF`.
-- Official `parsiya/f108-pro` mkimage writes `GIF_centiseconds / 2`, which equals `logical_ms / 20`. That is a GIF packing formula, not the LCD timer quantum.
-- Connected F108 Pro playback of those bytes is 5× faster than a 20 ms interpretation (5 s configured → ~1 s on the LCD). QuotaDeck therefore treats the firmware tick as **4 ms** (`20 / 5`). Hardware duration = `delay_byte × 4 ms`, max 255 × 4 = **1,020 ms** per frame.
-- GUI preview and GIF export keep millisecond durations on an exact **20 ms** logical grid (lcm of the 4 ms firmware tick and GIF centiseconds) so a 5-second account slot stays 5 seconds in Preview and 5 seconds after HID encode.
-- Every logical delay must already be an exact 20 ms tick in the 20–1,020 ms range. Never exceed **141 frames**; slot 0 is the factory GIF.
-- Empty quota playlists and all-hidden cumulative playlists use a repeated idle card whose Preview total stays **2,000 ms**. A single 2,000 ms frame cannot encode (max 1,020 ms), so the renderer emits two 1,000 ms frames. Preview milliseconds and firmware `delay_byte × 4` both sum to 2,000 ms.
+- 256-byte header: `byte[0]=frame_count`, `byte[1+i]=logical_ms/2`, rest `0xFF`.
+- Official `parsiya/f108-pro` mkimage writes `GIF_centiseconds / 2`, which equals `logical_ms / 20`. That is a GIF packing formula, not a measured LCD timer. There is no independent playback measurement of that packing in this repository.
+- On this user's connected F108 Pro, `/20` packing of a configured 5 s slot played in about 1 s, and the later `/4` packing played in about 2.5 s. QuotaDeck therefore encodes with an **observed 2 ms playback unit** (`delay_byte = logical_ms / 2`). This is a device-observation calibration, not a general HID/firmware specification, and still needs a stopwatch re-check after flashing.
+- Hardware-oriented duration = `delay_byte × 2 ms`. The 1-byte max is 255, so 255 × 2 = 510 ms; logical delays stay on the 20 ms grid, so the per-frame max is **500 ms**.
+- GUI preview and GIF export keep the configured millisecond durations on an exact **20 ms** logical grid. Encode is the only path that applies the 2 ms observation.
+- Every logical delay must already be an exact 20 ms tick in the 20–500 ms range. Never exceed **141 frames**; slot 0 is the factory GIF.
+- Empty quota playlists and all-hidden cumulative playlists use a repeated idle card whose Preview total stays **2,000 ms**. A single 2,000 ms frame cannot encode (max 500 ms), so the renderer emits four 500 ms frames. Preview milliseconds and observed `delay_byte × 2` both sum to 2,000 ms.
 - Each frame: 240×135 RGB565 little-endian (64,800 bytes)
 - Pad to a multiple of 4096 with `0xFF`
-- Hard maximum **141 frames**. Firmware does not bound-check; overflow corrupts menu graphics.
+- Hard maximum **141 frames**. Firmware does not bound-check; overflow corrupts menu graphics. The hidden default budget is 80 frames (8×5 s). Feasible 81–141 combinations raise that hidden budget before save; combinations over 141 are rejected before the file is written. Padded payload size grows with frame count (80≈5.2MB, 96≈6.2MB, 141≈9.1MB), so longer holds make HID upload and flash writes slower.
 - Before the first HID command, QuotaDeck snapshots mutable input and revalidates the immutable raw payload: frame count 1–141, non-zero delay bytes, 4096-byte alignment, and the exact padded length implied by the declared frame count.
 
 ## Clock

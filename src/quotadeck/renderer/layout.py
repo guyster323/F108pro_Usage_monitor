@@ -33,7 +33,7 @@ from quotadeck.renderer.canvas import (
     truncate_pixel_text,
 )
 from quotadeck.renderer.icons import COIN_SIZE, load_cost_coin
-from quotadeck.usage.display import CumulativeSnapshot
+from quotadeck.usage.display import NO_AVG_LABEL, CumulativeSnapshot
 from quotadeck.usage.models import CostCurrency, UsageIntensity, UsagePeriod
 
 # Inclusive pixel boxes. A single account always owns the full LCD.
@@ -474,11 +474,13 @@ def cumulative_bar_caption(
         return f"{period} PARTIAL"
     if not snapshot.available:
         return f"{period} N/A"
+    if snapshot.intensity is UsageIntensity.INSUFFICIENT_HISTORY:
+        return f"{period} {NO_AVG_LABEL}"
+    if snapshot.average_tokens is None:
+        return f"{period} {NO_AVG_LABEL}"
     selected = snapshot.period_comparison
     if selected is not None and selected.history_estimated:
         return f"{period} EST"
-    if snapshot.intensity is UsageIntensity.INSUFFICIENT_HISTORY:
-        return f"{period} BUILD"
     return f"{period} AVG"
 
 

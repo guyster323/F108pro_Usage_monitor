@@ -173,12 +173,12 @@ def test_quota_hash_includes_frame_budget() -> None:
     assert render_hash(
         [snapshot], severities, theme="crew", mode="smart"
     ) != render_hash(
-        [snapshot], severities, theme="crew", mode="smart", frame_budget=32
+        [snapshot], severities, theme="crew", mode="smart", frame_budget=48
     )
     assert render_hash(
         [snapshot], severities, theme="crew", mode="smart"
     ) == render_hash(
-        [snapshot], severities, theme="crew", mode="smart", frame_budget=48
+        [snapshot], severities, theme="crew", mode="smart", frame_budget=80
     )
 
 

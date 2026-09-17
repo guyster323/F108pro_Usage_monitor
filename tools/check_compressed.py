@@ -36,7 +36,7 @@ def main() -> int:
     if len(rgb565) != LCD_FRAME_BYTES:
         print(f"RGB565 size {len(rgb565)} != {LCD_FRAME_BYTES}", file=sys.stderr)
         return 1
-    payload = build_payload([Frame(image=image.convert("RGB"), delay_ms=1000)])
+    payload = build_payload([Frame(image=image.convert("RGB"), delay_ms=500)])
     validate_payload(payload)
     print(f"compressed payload ok: {LCD_FRAME_BYTES} RGB565 bytes per frame")
     return 0

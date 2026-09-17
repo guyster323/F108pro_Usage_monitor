@@ -19,7 +19,7 @@
 ---
 # QuotaDeck
 
-## v0.2.3 최신 변경 요약
+## v0.2.3 최신 변경 요약 (2026-09-17)
 
 누적 Usage collector와 기간·모델별 토큰 집계, 부분 월 기반 `AVG EST`,
 KRW 자동 환율, 컴팩트 설정 UI를 제공합니다. Cursor는 설정의 소스 메뉴에서
@@ -34,10 +34,20 @@ parent session을 공유하는 sibling thread가 손상 기록으로 오인되�
 10,387개 observation, malformed 0건이었습니다. `PARTIAL`이어도 신뢰 가능한
 비율이 있으면 5단계 반응을 사용하므로 300% 이상은 쓰러짐 캐릭터로 표시합니다.
 
-F108 Pro의 실측 재생이 기존 20ms 해석보다 5배 빠른 점을 반영해 payload delay를
-4ms firmware tick으로 인코딩합니다. GUI/GIF는 20ms 논리 시간을 유지하므로
-계정당 5초 설정은 Preview와 LCD payload에서 모두 정확히 5초입니다. 기본
-frame budget은 48이며 구버전의 숨은 32 값은 config v7에서 자동 마이그레이션됩니다.
+F108 Pro payload delay는 이 사용자 장치의 관측을 기준으로 인코딩합니다.
+이전 `/20` 패킹은 5초 설정이 약 1초로 재생됐고, 이후 `/4` 패킹은 약 2.5초로
+관측됐습니다. 소스는 관측 재생 단위 2ms(`delay_byte = logical_ms / 2`)로
+2배 보정합니다. GUI/GIF의 논리 시간은 설정한 밀리초 그대로입니다. 프레임당
+최대 논리 delay는 500ms이므로 기본 8계정 × 5초는 계정당 10프레임이 필요하고,
+숨은 frame budget 기본값은 80입니다. 81~141프레임이 필요한 유효 조합
+(예: 8계정 × 6초=96, 9계정 × 5초=90, 3계정 × 20초=120)은 저장 전에
+숨은 budget을 필요량까지 올리고, 141을 넘는 조합은 파일을 쓰기 전에 거절합니다.
+프레임이 늘면 HID payload가 커집니다(80≈5.2MB, 96≈6.2MB, 141≈9.1MB).
+구버전의 숨은 32와 v7 기본 48은 config v8에서 80으로 올린 뒤, 계정×표시
+시간이 더 필요하면 141 이하에서 추가로 맞춥니다. 이번 보정은 사용자 관측
+기반이며, 연결된 키보드에서 스톱워치 재측정이 필요합니다.
+`dist/QuotaDeck.exe`는 2026-09-17에 2ms 보정·config v8·`NO AVG`를 반영해
+다시 빌드했습니다.
 
 Windows 기본 auto/Win32 전송은 `GET_FEATURE`가 65바이트 또는 64바이트를 돌려줘도 둘 다 리포트 ID(`buffer[0]`)를 제거하고 페이로드 접두사 `04 18 00 01`을 만들며, 64바이트 카운트는 부족한 마지막 바이트만 패딩하고, 그보다 짧은 읽기는 거절합니다.
 
@@ -49,7 +59,7 @@ Windows 기본 auto/Win32 전송은 `GET_FEATURE`가 65바이트 또는 64바이
 
 스프라이트 컴파일러는 Pillow `QuantOctree.c`를 바탕으로 한 고정 순서 알고리즘을 사용하며, 출처와 라이선스는 [LICENSE](LICENSE)에 기록했습니다. 문서 미리보기 내보내기는 픽셀이 같을 때 기존 PNG 바이트를 유지합니다. `python tools/gen_sprites.py --check`(기본 환경과 `PYTHONHASHSEED=1`), `tools/verify_refresh.py`, 문서 내보내기를 독립적으로 통과했습니다. `pyproject.toml`의 테스트 경로에 `src`와 저장소 루트를 함께 지정해 `pytest`와 `python -m pytest` 모두 `tools` 회귀 테스트를 수집합니다.
 
-2026-09-16 최신 로컬 통합 검증은 **512 passed, 1 skipped, 8 subtests
+2026-09-17 최신 로컬 통합 검증은 **524 passed, 1 skipped, 8 subtests
 passed**였고, 문서·스프라이트·frame budget 검사와 PyInstaller 패키지 렌더
 스모크 테스트도 통과했습니다. 건너뛴 테스트는 Windows 디렉터리 심볼릭 링크
 권한이 필요한 기존 테스트입니다. 이전 Windows CI 기록은
@@ -60,6 +70,26 @@ passed**였고, 문서·스프라이트·frame budget 검사와 PyInstaller 패�
 </p>
 
 자세한 변경 사항은 [v0.2.3 변경 노트](CHANGE_NOTE_v0.2.3_KO.md)를 참고하세요.
+
+## Changelog
+
+### 2026-09-17
+- F108 payload delay를 이 장치 관측 기준 2ms 단위(`delay_byte = logical_ms / 2`)로 보정했습니다. 이전 `/20`은 약 1초, `/4`는 약 2.5초로 재생됐습니다.
+- 숨은 frame budget 기본값을 48→80으로 올리고 설정 스키마를 **config v8**로 올렸습니다. 81~141프레임이 필요한 조합은 저장 전 자동 상향하고, 141을 넘으면 파일을 쓰기 전에 거절합니다.
+- 평균을 만들 수 없을 때 `BUILD` 대신 `NO AVG`를 쓰고, GUI tooltip에 일/월 완료 이력 부족 이유를 표시합니다.
+- `dist/QuotaDeck.exe`를 위 변경으로 다시 빌드했습니다. 연결된 키보드에서 스톱워치 재측정이 필요합니다.
+- 로컬 통합 검증: **524 passed, 1 skipped, 8 subtests passed**.
+
+### 2026-09-16
+- Cursor Usage CSV 가져오기와 Enterprise Team Admin API 안내 연결을 추가했습니다. API 키는 Windows 자격 증명 관리자에만 둡니다.
+- Codex `token_usage_record`를 `thread_id` 독립 스트림으로 묶어 sibling thread 누락을 막았습니다.
+- 부분 월 `AVG EST`, KRW 자동 환율(미국 재무부 분기 고시 → 캐시 → 1,400원/USD), 컴팩트 설정 UI를 제공합니다.
+- GUI 모드 전환 스냅샷을 유지하고, Cursor/FX 조회는 TLS 검증을 끄지 않습니다.
+
+### 2026-09-12
+- Win32 `GET_FEATURE` 64/65바이트를 리포트 ID 제거 후 정규화하고, 연결된 F108 Pro에서 8프레임 업로드 ACK를 확인했습니다.
+- 스프라이트 컴파일러가 Pillow `FASTOCTREE`의 libc `qsort` 타이브레이크를 쓰지 않아 Windows CI와 104개 런타임 PNG 팔레트가 같아졌습니다.
+- 표시 정보 콤보박스가 Qt `QPaintDevice.metric()`을 가리던 기동 오류를 수정했습니다.
 
 이미 이 PC에 로그인된 AI 코딩 계정의 **잔여 Rate Limit** 또는 이 기기에 보존된
 **누적 토큰 사용량**을 AULA F108 Pro 키보드 LCD에 보여 주는 데스크톱 앱입니다.
@@ -172,8 +202,10 @@ Bar 아래에는 큰 글씨로 같은 단위의 토큰과 비용을 나란히 �
 평균은 `M EST`로 보입니다. 작은
 LCD에는 통화명과 한글을 넣지 않고 비용도 ASCII `K/M/B` 단위만 사용합니다.
 읽기 오류가 있는 subtotal은 숫자를 유지하면서 `M/D PARTIAL`로 표시합니다.
-사용 가능한 과거 표본이 전혀 없을 때만 `M/D BUILD`, 귀속 가능한 원장이 없을
-때만 `M/D N/A`로 구분됩니다.
+사용할 과거 완료 이력이 부족해 평균을 만들지 못할 때는 `M/D NO AVG`, 귀속
+가능한 원장이 없을 때만 `M/D N/A`로 구분됩니다. `NO AVG`는 계산 근거 없는
+AVG를 합성하지 않으며, GUI tooltip에 일간 완료 이력 n/7 또는 월간 완료 과거
+월 n/1과 현재 기간이 시작일부터 완전한지를 표시합니다.
 
 ```text
 THIS   AVG          THIS   AVG
@@ -205,10 +237,9 @@ last-known-good 캐시, 그다음 기본 **1,400원/USD** 수동 폴백을 씁�
 ### 실행 파일
 
 저장소의 [dist/QuotaDeck.exe](dist/QuotaDeck.exe)는 Python 설치 없이 실행할 수
-있습니다. 2026-09-16 Cursor 연결 UX, Admin API, Codex thread 스캔, 부분 월
-추정과 F108 4ms firmware timing을 반영해 다시 빌드했으며, 패키지 CLI와
-4계정×5초 Preview 렌더를 확인했습니다. 실제 LCD 재생 시간은 연결된 키보드에서
-한 번 더 확인해야 합니다.
+있습니다. 2026-09-17에 관측 2ms LCD 인코딩, config v8 frame budget 80,
+`NO AVG` 표시를 반영해 다시 빌드했습니다. 연결된 키보드에서 스톱워치로
+재생 시간을 한 번 더 확인해야 합니다.
 직접 빌드하려면 아래 소스 실행 안내와 `QuotaDeck.spec`을 사용하세요.
 
 1. F108 Pro를 **USB-C 유선**으로 연결하고 `Fn+4`를 누릅니다.
@@ -256,9 +287,12 @@ py -3.12 -m venv .venv
 새 설정이나 시간 필드가 없는 설정은 5초입니다. 업그레이드할 때는 사용자가
 정한 값을 덮어쓰지 않기 위해 기존 `scene_hold_seconds`(2~20초)를 보존하므로,
 예전 4초/10초가 남아 있으면 설정에서 5초로 한 번 변경하세요.
-현재 설정 스키마는 **v7**입니다. 누적 기간·통화·환율과 Cursor CSV/Admin
+현재 설정 스키마는 **v8**입니다. 누적 기간·통화·환율과 Cursor CSV/Admin
 바인딩을 저장하며, API 키는 제외합니다. 이전 설정은 월별·KRW·자동 환율·
-1,400원/USD 폴백과 frame budget 48로 안전하게 마이그레이션됩니다.
+1,400원/USD 폴백과 frame budget 80으로 안전하게 마이그레이션됩니다. v7의
+숨은 기본값 48은 새 안전값 80으로 올리고, 사용자가 명시한 다른 커스텀
+budget은 보존한 뒤 1..141으로 clamp합니다. 8계정 × 6초처럼 80을 넘지만
+141 이하인 조합은 필요량까지 자동 수용합니다.
 
 트레이 앱은 이 주기로 자동 조회합니다. 조회 뒤 렌더 결과가 바뀌었거나 오래된 경우에도
 별도의 최소 기록 간격과 영속화된 하루 안전 한도를 통과할 때만 키보드에 씁니다.

@@ -32,21 +32,37 @@ def rgb888_to_rgb565(r: int, g: int, b: int) -> int:
 
 
 def delay_byte(delay_ms: int) -> int:
-    """Encode a logical millisecond duration as one firmware delay byte.
+    """Encode a logical millisecond duration as one observed-playback byte.
 
-    ``Frame.delay_ms`` stays in GUI/GIF milliseconds. The LCD interprets the
-    stored byte as ``FIRMWARE_DELAY_TICK_MS`` (4 ms), not 20 ms.
+    ``Frame.delay_ms`` stays in GUI/GIF milliseconds. Hardware encode uses
+    ``FIRMWARE_DELAY_TICK_MS`` (the 2 ms observed playback unit), not 20 ms
+    and not a general 4 ms HID claim.
     """
     return max(1, min(255, quantize_delay_ms(delay_ms) // FIRMWARE_DELAY_TICK_MS))
 
 
 def firmware_duration_ms(delay_ms: int) -> int:
-    """Hardware playback for one logical frame delay."""
+    """Observed-calibration playback for one logical frame delay."""
     return delay_byte(delay_ms) * FIRMWARE_DELAY_TICK_MS
 
 
+def payload_padded_size(frame_count: int) -> int:
+    """Return the 4096-byte-padded HID payload size for ``frame_count`` frames.
+
+    Each extra frame adds 64,800 RGB565 bytes plus header/page padding, so
+    80 / 96 / 141 frames are about 5.2 / 6.2 / 9.1 MB. Longer holds that
+    raise the frame count make uploads and flash writes slower.
+    """
+
+    count = int(frame_count)
+    if count < 0:
+        raise PayloadError("frame count cannot be negative")
+    raw_size = LCD_HEADER_BYTES + LCD_FRAME_BYTES * count
+    return ((raw_size + LCD_PAGE_BYTES - 1) // LCD_PAGE_BYTES) * LCD_PAGE_BYTES
+
+
 def payload_duration_ms(payload: bytes) -> int:
-    """Sum of firmware-decoded frame delays declared by a serialized header."""
+    """Sum of observed-calibration durations declared by a serialized header."""
     if not payload:
         raise PayloadError("payload is empty")
     frame_count = payload[0]
@@ -174,7 +190,7 @@ def page_count(payload: bytes) -> int:
     return len(payload) // LCD_PAGE_BYTES
 
 
-def solid_frame(r: int, g: int, b: int, delay_ms: int = 1000) -> Frame:
+def solid_frame(r: int, g: int, b: int, delay_ms: int = 500) -> Frame:
     image = Image.new("RGB", (LCD_WIDTH, LCD_HEIGHT), (r, g, b))
     return Frame(image=image, delay_ms=delay_ms)
 

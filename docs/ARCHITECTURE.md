@@ -22,13 +22,18 @@ There is no provider grouping, transition card, reset card or final summary.
 pose. The default is 5 seconds. `renderer.budget.allocate()` converts this to
 20 ms logical/GIF ticks, gives each account the same frame count and exact
 tick sum, and rejects impossible budgets before rendering. Payload delay
-bytes use a separate 4 ms firmware tick (observed 5× vs the older 20 ms
-comment). No final slice may silently remove later accounts. The constraints
-are:
+bytes use an observed 2 ms playback unit (this user's `/4` encode played a
+5 s setting in about 2.5 s). Preview/GIF keep the configured logical
+milliseconds. A stored budget below the feasible requirement is raised up
+to the 141-frame hard limit before save; only combinations that need more
+than 141 frames fail closed. No final slice may silently remove later
+accounts. The constraints are:
 
-- soft budget: 48 frames (normal default: 48; legacy hidden 32 is migrated)
+- default hidden budget: 80 frames (8 accounts × 5 s; legacy hidden 32 and v7 default 48 migrate)
+- feasible 81–141 combinations persist (8×6 s=96, 9×5 s=90, 3×20 s=120)
 - absolute device limit: 141 frames
-- logical/GIF frame delay: 20–1,020 ms (firmware max is 255 × 4 ms)
+- padded payload size grows with frames (80≈5.2MB, 96≈6.2MB, 141≈9.1MB)
+- logical/GIF frame delay: 20–500 ms (255 × 2 ms = 510 ms, snapped down to the 20 ms grid)
 - frame dimensions: exactly 240×135
 - payload pixel data: RGB565, 64,800 bytes per frame
 

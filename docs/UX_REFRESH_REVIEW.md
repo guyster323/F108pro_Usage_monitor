@@ -26,7 +26,7 @@
 | 마지막 summary를 읽을 수 없었다. | 240×135 안에 여러 계정과 수치를 동시에 축소해 넣어 글자 높이와 정보 밀도가 LCD 물리 한계를 넘었다. | summary 계열을 playlist에서 완전히 제거하고 계정별 화면에 전체 면적을 배정한다. |
 | Quota 정보가 멀리서 구분되지 않았다. | 얇은 막대와 막대 밖의 작은 레이블·숫자가 서로 다른 시선 위치에 있었고, 배경 대비도 일정하지 않았다. | 막대 자체를 정보 카드로 만들고 레이블과 퍼센트를 내부에 넣는다. 채움 경계를 기준으로 글자색을 분할한다. |
 | 캐릭터가 작거나 뭉개졌다. | 원본 아트, 런타임 크기, 투명 여백, 상태 프레임, RGB565 변환에 대한 재현 가능한 계약이 없었다. | 이미지 생성 원본과 런타임 PNG를 분리하고, 88×108·binary alpha·48색·RGB565-safe 변환을 자동화한다. |
-| 설정한 초와 실재 재생 시간이 어긋날 수 있었다. | 공식 mkimage는 delay를 `GIF_cs / 2`(= ms/20)로 쓰지만, 연결된 F108 Pro는 그 바이트를 20ms가 아니라 4ms로 재생한다(5초 설정 → 약 1초). | GUI/GIF는 20ms 논리 시간, payload는 `delay_ms / 4` 바이트로 나눠 프리뷰와 하드웨어가 같은 5초를 유지한다. |
+| 설정한 초와 실재 재생 시간이 어긋날 수 있었다. | 공식 mkimage는 delay를 `GIF_cs / 2`(= ms/20)로 쓰지만, 이 사용자 장치의 `/20` 재생은 약 1초, `/4` 재생은 약 2.5초로 관측됐다. 4ms는 HID 일반론이 아니다. | GUI/GIF는 설정한 논리 ms를 유지하고, payload만 관측 재생 단위 2ms(`delay_ms / 2`)로 인코딩한다. 연결된 키보드에서 재측정이 필요하다. |
 
 ## 240×135 화면 레이아웃 계약
 
@@ -50,7 +50,7 @@
 비용 행 좌측 시작(THIS 열)에는 7×7 투명 픽셀 코인을 둔다.
 모델명, `TOTAL`, `365D`, `SINCE`는 이 작은 LCD에 넣지 않는다.
 
-## 정확한 계정별 5초 / 논리 20ms · 펌웨어 4ms 시간 계약
+## 정확한 계정별 5초 / 논리 20ms · 관측 2ms 인코딩 계약
 
 표시 시간과 provider polling, 플래시 업로드 제한은 서로 다른 개념이다.
 
@@ -65,26 +65,32 @@
 1. 요청 시간 `requested_ms`를 가장 가까운 20ms 논리/GIF tick으로 양자화한다.
    `total_ticks = max(1, round(requested_ms / 20))`
 2. 실제 계정 시간은 `account_hold_ms = total_ticks × 20`이다. Preview와 GIF는 이 밀리초를 그대로 쓴다.
-3. 유효 frame budget은 요청값, soft cap 48, 펌웨어 hard limit 141 중 가장 작은 값이다.
-4. 계정 수가 `N`이면 계정당 수용량은 `floor(budget / N)`이다.
-5. 한 프레임의 최대 하드웨어 delay가 1,020ms(255 × 4ms)이므로 계정당 최소 프레임 수는 `ceil(account_hold_ms / 1020)`이다. 모든 계정을 안전하게 담을 수 없으면 계정을 조용히 누락하지 않고 `SceneBudgetError`를 낸다.
-6. 가능한 범위에서 계정당 최대 8프레임을 사용한다. `divmod(total_ticks, frames_per_account)`로 tick을 나누고 나머지 tick은 마지막 프레임부터 1개씩 더한다.
-7. payload는 각 프레임 delay를 정확히 `delay_ms / 4`인 1바이트 값으로 저장한다. 허용 범위는 1~255 firmware tick, 즉 논리 20~1,020ms다.
+3. 숨은 기본 `frame_budget`은 80이다. 저장 전 검증은
+   `enabled_accounts × ceil(hold_ms / 500ms)`가 hard limit 141을 넘으면
+   파일을 쓰지 않고 거절한다. 필요량이 81~141이면 숨은 budget을 필요량까지
+   올린다. 3계정 × 5초 기본 80은 그대로 유지된다.
+4. 런타임 `allocate()`도 같은 규칙으로 요청 budget을 필요량까지 올리고,
+   141을 넘을 때만 `SceneBudgetError`로 닫는다. 계정을 조용히 빼지 않는다.
+5. 한 프레임의 최대 논리 delay는 500ms다. 1바이트 최댓값 255에 관측 2ms 단위를 곱하면 510ms이지만, 20ms 논리 격자에 맞추면 500ms가 된다. 계정당 최소 프레임 수는 `ceil(account_hold_ms / 500)`이다.
+6. 가능한 범위에서 계정당 최대 8프레임을 사용하되, 5초 슬롯의 최소는 10프레임이다. `divmod(total_ticks, frames_per_account)`로 tick을 나누고 나머지 tick은 마지막 프레임부터 1개씩 더한다.
+7. payload는 각 프레임 delay를 정확히 `delay_ms / 2`인 1바이트 값으로 저장한다. 허용 범위는 1~255 observed tick, 즉 논리 20~500ms다. 이 2ms 단위는 사용자 장치에서 `/4` 인코딩이 약 2.5초로 재생된 관측을 2배 보정한 것이며, HID 일반론이 아니다. 프레임이 늘면 padded HID payload가 커진다(80≈5.2MB, 96≈6.2MB, 141≈9.1MB).
 
-기본값에서 계정 수가 적으면 계정당 8프레임을 쓰고 논리 delay는 `620ms × 6 + 640ms × 2 = 5,000ms`다. payload에는 `155 × 6 + 160 × 2 = 1,250` firmware tick이 기록되며 `1,250 × 4ms = 5,000ms`로 하드웨어 재생 합도 정확히 5초다. 8계정 × 5초는 계정당 최소 5프레임(40)이 필요하므로 숨은 기본 `frame_budget`은 48이다. 구설정의 숨은 값 32는 schema v7에서 48로 올린다. 유효 budget은 soft cap 48과 hard limit 141을 넘지 않는다. 10계정 × 5초(최소 50프레임)나 8계정 × 8초(최소 64프레임)처럼 한도를 넘으면 계정을 조용히 빼지 않고 `SceneBudgetError`로 닫는다.
+기본 5초 슬롯은 계정당 10프레임, 논리 delay `500ms × 10 = 5,000ms`다. payload delay byte는 `250 × 10 = 2,500`이고 관측 단위 2ms를 적용하면 5,000ms를 목표로 한다. Preview 논리 합도 5,000ms다. 8계정 × 5초는 계정당 최소 10프레임(80)이 필요하므로 숨은 기본 `frame_budget`은 80이다. 구설정의 숨은 값 32와 v7 기본 48은 schema v8에서 80으로 올린다. 명시한 다른 커스텀 값은 보존하고 1..141으로 clamp한다. v7의 8계정 × 6초(96프레임)처럼 80을 넘지만 141 이하인 조합은 저장 전·로드 후 필요량까지 자동 수용한다. 8계정 × 20초(320프레임)처럼 한도를 넘으면 설정 파일을 쓰지 않고 KO/EN 안내로 거절한다. GUI/CLI는 영문 raw exception을 무한 재시도하지 않는다. 이 보정은 하드웨어 실측 완료를 주장하지 않으며 재측정이 필요하다.
 
-빈 quota playlist와 누적 화면에서 보이는 계정이 없을 때(연결되지 않은 Cursor만 있는 경우 포함)는 동일 빈 카드를 반복한 idle 시퀀스를 쓴다. Preview 합은 예전처럼 2,000ms이고, 각 프레임 delay는 1,020ms 이하이며 20ms 논리 tick과 4ms firmware tick으로 정확히 인코딩된다.
+빈 quota playlist와 누적 화면에서 보이는 계정이 없을 때(연결되지 않은 Cursor만 있는 경우 포함)는 동일 빈 카드를 반복한 idle 시퀀스를 쓴다. Preview 합은 예전처럼 2,000ms이고, 각 프레임 delay는 500ms 이하이며 20ms 논리 tick과 관측 2ms 단위로 정확히 인코딩된다(4프레임 × 500ms, delay byte `250 × 4`).
 
 따라서 빈 계정 예외 화면을 제외하면 한 playlist의 총 재생 시간은 `선택 계정 수 × 계정별 hold`다. FIXED는 사용자 순서를 유지하고 SMART는 severity 순으로 안정 정렬하지만, 두 모드 모두 각 계정을 한 번만 표시한다.
 
-설정 파일은 `config_version = 7`이다. v4에서 도입한 잔여 리밋/누적 사용량
+설정 파일은 `config_version = 8`이다. v4에서 도입한 잔여 리밋/누적 사용량
 선택 `metric_mode`에 더해, v5는 `cumulative_period`, `cost_currency`,
 `usd_to_krw_rate`를 기록하고, v6는 Cursor CSV/Admin 바인딩
-`cursor_bindings`를 기록하며, v7은 4ms firmware tick 이후 8계정 × 5초를
-담기 위해 숨은 `frame_budget` 32를 48로 마이그레이션한다. 이 필드가 없는
+`cursor_bindings`를 기록하며, v7은 숨은 `frame_budget` 32를 48로 올렸고,
+v8은 관측 2ms 단위 이후 8계정 × 5초를 담기 위해 숨은 기본 48을 80으로
+마이그레이션한다. 이 필드가 없는
 구버전 설정은 월별, KRW, 1 USD당 1,400원과 빈 바인딩으로 마이그레이션하며,
-`metric_mode`가 없는 더 오래된 설정은 계속 잔여 리밋을 사용한다. 환율은 사용자가 직접 바꾸는 표시용 환율이며 자동 또는
-실시간으로 조회되지 않는다. 새 설정 또는 표시 시간 필드가 없는 설정에는 5초를
+`metric_mode`가 없는 더 오래된 설정은 계속 잔여 리밋을 사용한다. KRW 기본은
+미국 재무부 분기 공식 고시환율(실시간 현물가 아님) → last-known-good 캐시 →
+수동 1,400원/USD 폴백이다. 새 설정 또는 표시 시간 필드가 없는 설정에는 5초를
 적용한다. 구버전 JSON에 이미 `scene_hold_seconds`가 있으면 과거 기본값과 사용자의
 명시적 선택을 구분할 수 없으므로 2~20초 범위의 4초·10초 같은 명시값은 보존하고
 범위 밖 값은 clamp한다. 저장할 때는 항상 현재 config version을 기록한다. GUI는
@@ -156,7 +162,9 @@ KRW 또는 USD 정가 환산치다. 예를 들어 토큰은 `0.6B / 1.2B`, GUI�
 정상 막대 caption은 통화와 무관하게 월별 `M AVG`, 일별 `D AVG`다. 첫 부분 월을
 환산한 평균은 `M EST`, 일부 기록만 읽힌 상태는 `M PARTIAL`/`D PARTIAL`로
 구분하며 둘 다 최선 추정 숫자와 퍼센트를 유지한다. 사용할 과거 표본이 전혀 없을
-때만 `M/D BUILD`, 귀속 가능한 원장이 없을 때만 `M/D N/A`를 사용한다. partial
+때만 `M/D NO AVG`, 귀속 가능한 원장이 없을 때만 `M/D N/A`를 사용한다. `NO AVG`
+는 AVG를 합성하지 않으며 GUI tooltip에 일간 n/7 또는 월간 n/1과 현재 기간
+완전 여부를 표시한다. partial
 subtotal에는 비용을 붙이지 않는다.
 
 현재 LCD의 계정 누적 카드는 Codex `sessions`/`archived_sessions`와 Claude Code
@@ -244,14 +252,14 @@ themes/quotadeck-crew/provider/<provider>/<state>_01.png
 
 | 경로 | 책임 |
 |---|---|
-| `src/quotadeck/config.py` | 새 설정의 5초 기본값, 기존 명시값 보존, config v5와 독립 `metric_mode`·일별/월별·KRW/USD·자동 환율+수동 폴백 기록, 2~20초 저장 범위 |
+| `src/quotadeck/config.py` | 새 설정의 5초 기본값, 기존 명시값 보존, config v8의 `metric_mode`·일별/월별·KRW/USD·자동 환율+수동 폴백·숨은 frame budget 80 기록, 2~20초 저장 범위 |
 | `src/quotadeck/app/i18n.py` | 표시 정보·기간·통화 선택, 자동/수동 환율, 계정당 표시 시간, hover 안내와 Flash 16시간 추정 |
 | `src/quotadeck/cli.py`, `src/quotadeck/__main__.py`, `src/quotadeck/diagnostics.py` | GUI import 전부터 시작하는 회전 로그, 예외/fault/Qt hook, 민감정보 마스킹, 정상·비정상 종료 marker |
 | `src/quotadeck/app/main_window.py`, `tray.py` | worker 실제 종료 기준 수명주기, 안전한 tray 종료 대기, tray/menu 소유권, 60초 health watchdog와 로그 폴더 메뉴 |
 | `src/quotadeck/core/flashbudget.py`, `scheduler.py` | 올림 기반 하루 횟수, 잠금·선예약 기반 Flash 상태 보존, quota/cumulative poll·render·upload |
 | `src/quotadeck/usage/` | Codex/Claude 로컬 scanner, 일별/월별 날짜·모델·평균 분석, 보수적 Grok adapter, TTL cache, 기간별 LCD snapshot |
 | `src/quotadeck/usage/pricing.py`, `pricing_catalog_2026_09_11.py` | 날짜가 고정된 공식 API 정가 snapshot과 기간별 THIS/AVG all-or-nothing 비용 추정 |
-| `src/quotadeck/renderer/budget.py` | 논리 20ms / 펌웨어 4ms tick 기반의 균등·정확한 account slot 및 frame budget 오류 처리 |
+| `src/quotadeck/renderer/budget.py` | 논리 20ms / 관측 2ms encode 단위 기반의 균등·정확한 account slot 및 frame budget 오류 처리 |
 | `src/quotadeck/renderer/scenes.py` | account-only playlist, summary/transition/중복 제거, 상태 애니메이션 |
 | `src/quotadeck/renderer/layout.py` | 240×135 고정 좌표, 88×108 캐릭터 슬롯, 1/2개 full-height quota bar와 큰 THIS/AVG 토큰·비용 표 |
 | `src/quotadeck/renderer/canvas.py` | 결정적 픽셀 글꼴, 큰 퍼센트, split-colour text mask, 100% 포화·300%+ 사용량 막대 |
@@ -290,8 +298,8 @@ git status --short
 
 - `verify_refresh.py`, sprite `--check`, theme validation, 전체 pytest가 모두 exit code 0이다.
 - sprite 재생성 후 `themes/quotadeck-crew`에 예상하지 않은 diff가 생기지 않는다.
-- 렌더 프레임은 모두 240×135이고 총 frame 수는 soft cap 48 및 hard limit 141을 넘지 않는다.
-- 각 계정의 payload delay 합이 기본값에서 정확히 1,250 firmware tick(4ms), 즉 5,000ms다. Preview 논리 합도 5,000ms다.
+- 렌더 프레임은 모두 240×135이고 총 frame 수는 hard limit 141을 넘지 않는다. 기본 숨은 budget은 80이며, 81~141이 필요한 유효 조합은 budget을 올린다.
+- 기본 5초 슬롯의 payload delay byte는 계정당 `250 × 10 = 2,500`이다. Preview 논리 합은 5,000ms다. 2ms 단위는 사용자 관측 보정이므로 하드웨어 스톱워치 재측정이 남아 있다.
 - SMART/FIXED 모두 선택 계정의 누락과 중복이 없다.
 - raw payload는 불변 snapshot으로 고정되며 HID 명령을 보내기 전에 1~141 frame, non-zero delay, frame 수에 맞는 정확한 padded length를 만족해야 한다.
 - 50% bar의 글자 픽셀이 fill 쪽에서는 흰색, empty 쪽에서는 검은색 계열이다.

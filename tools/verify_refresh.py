@@ -34,6 +34,7 @@ from quotadeck.core.models import (
 from quotadeck.core.severity import band_for_remaining, snapshot_severity
 from quotadeck.devices.aula_f108.constants import (
     LCD_HEIGHT,
+    LCD_MAX_DELAY_MS,
     LCD_MAX_FRAMES,
     LCD_PAGE_BYTES,
     LCD_WIDTH,
@@ -241,34 +242,40 @@ def _check_rotation_and_payload() -> None:
         ordered = _order(snapshots, severities, mode)
         assert len(ordered) == len(snapshots)
         assert {item.key for item in ordered} == {item.key for item in snapshots}
-        budget = allocate(len(ordered), 32, hold_ms=5000)
+        budget = allocate(len(ordered), 40, hold_ms=5000)
         frames = render_playlist(
             snapshots,
             severities,
             theme,
             mode=mode,
-            frame_budget=32,
+            frame_budget=40,
             hold_ms=5000,
         )
-        assert len(frames) == budget.total_frames <= 32
+        assert len(frames) == budget.total_frames <= LCD_MAX_FRAMES
+        assert budget.frames_per_account == 10
+        assert budget.frame_delays_ms == (500,) * 10
         for index in range(len(ordered)):
             start = index * budget.frames_per_account
             account_frames = frames[start : start + budget.frames_per_account]
-            encoded_ms = sum(delay_byte(frame.delay_ms) * 4 for frame in account_frames)
-            assert encoded_ms == 5000
+            encoded = [delay_byte(frame.delay_ms) for frame in account_frames]
+            assert encoded == [250] * 10
+            assert sum(encoded) == 2500
+            assert sum(frame.delay_ms for frame in account_frames) == 5000
         assert all(frame.image.size == (LCD_WIDTH, LCD_HEIGHT) for frame in frames)
         payload = build_payload(frames)
         assert len(payload) > len(frames) * LCD_WIDTH * LCD_HEIGHT * 2
         assert validate_payload(payload) == len(payload) // 4096
 
+    if allocate(9, 8, hold_ms=5000).total_frames != 90:
+        raise AssertionError("9 accounts × 5 s should auto-expand to 90 frames")
     try:
-        allocate(9, 8, hold_ms=5000)
+        allocate(8, hold_ms=20_000)
     except SceneBudgetError:
         pass
     else:
         raise AssertionError("impossible budget did not raise SceneBudgetError")
 
-    validate_frames([solid_frame(0, 0, 0, 1020)] * LCD_MAX_FRAMES)
+    validate_frames([solid_frame(0, 0, 0, LCD_MAX_DELAY_MS)] * LCD_MAX_FRAMES)
     try:
         validate_frames([Frame(new_canvas(), 5120)])
     except PayloadError:
