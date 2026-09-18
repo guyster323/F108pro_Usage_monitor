@@ -1,7 +1,15 @@
 # QuotaDeck v0.2.3 변경 노트
 
 작성일: 2026-09-11
-수정일: 2026-09-17
+수정일: 2026-09-18
+
+## 2026-09-18 Cursor Admin completeness · stale gate · CLI
+
+- Admin 캐시 v2에 completeness 메타데이터를 저장하고, 20,000건 상한 뒤의 추가 유효 이벤트와 손상된 관측 행을 `PARTIAL`로 표시합니다. 비정상 페이지 응답은 기존 last-known-good 캐시를 유지합니다.
+- 빈 HTTP 200은 연결 검증 성공으로만 기록합니다. 실제 새 데이터가 캐시에 저장된 경우에만 데이터 갱신 성공 시각을 갱신하며, 게이트 기록 실패와 캐시 저장 실패도 기존 캐시를 보존합니다.
+- `usage-engine --json` 및 텍스트 출력에 Admin stale 상태·사유를 별도 issue로 노출하고, GUI에 저장된 Cursor CSV/Admin binding을 CLI가 사용하도록 통일했습니다.
+- 회귀 테스트와 실제 API·자격 증명 관리자·F108 Pro 하드웨어의 미검증 범위는 [개선 기록](docs/IMPROVEMENT_2026-09-18.md)에 남겼습니다. 실행 파일은 다시 빌드하지 않았습니다.
+- 독립 리뷰 후속을 포함한 로컬 통합 검증은 **534 passed, 1 skipped, 8 subtests passed**입니다.
 
 ## 2026-09-17 LCD 2ms 보정 · frame budget 80 · NO AVG
 

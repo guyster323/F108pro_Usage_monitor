@@ -17,13 +17,26 @@
 - `docs/COLLECTORS.md`와 `docs/CUMULATIVE_USAGE.md`에 부분 수집, 캐시 상태,
   빈 응답, CLI 설정 동작을 기록했다.
 
+## 독립 리뷰 후속 반영
+
+- CLI normalized usage의 completeness(`confidence`)와 freshness(`stale issue`)를
+  분리해 JSON·텍스트에 Admin stale 사유를 노출했다.
+- HTTP 200 후속 페이지의 `usageEvents`, `pagination`, `hasNextPage` 형식을
+  검증하고, 비정상 응답이 last-known-good 캐시를 덮어쓰지 않게 했다.
+- Admin 게이트 기록 실패도 API를 호출하지 않고 기존 캐시와 구조화된 사유를
+  반환하도록 했다.
+- boolean이 아닌 v2 completeness 메타데이터와 잘못된 캐시 관측 행을 partial로
+  표시했다.
+- 한·영 README 및 변경 노트의 2026-09-18 changelog를 갱신했다.
+
 ## 검증 결과
 
-- 핵심 회귀군: `38 passed`.
-- 관련 회귀군: `152 passed`, 기존 Pillow `Image.getdata` deprecation warning
+- 기존 개선 회귀군: `38 passed`.
+- 독립 리뷰 후속 회귀군: `33 passed`.
+- 관련 회귀군: `157 passed`, 기존 Pillow `Image.getdata` deprecation warning
   416건.
-- 전체 테스트: `529 passed, 1 skipped, 8 subtests passed`.
-  기준선 524 passed에서 이번 개선 회귀 5건이 추가됐다.
+- 전체 테스트: `534 passed, 1 skipped, 8 subtests passed`.
+  기준선 524 passed에서 이번 개선과 리뷰 후속 회귀 10건이 추가됐다.
 - 전체 테스트에서 Pillow `Image.getdata` deprecation warning 8,316건이
   발생했으며, 변경 파일의 `git diff --check`와 `python -m compileall -q src tests`는
   통과했다.

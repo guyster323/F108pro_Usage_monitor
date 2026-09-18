@@ -21,6 +21,7 @@ from quotadeck.usage.collectors import (
 )
 from quotadeck.usage.cursor_admin import (
     ADMIN_EMPTY_REASON,
+    ADMIN_CACHE_MALFORMED_REASON,
     ADMIN_LEGACY_CACHE_REASON,
     ADMIN_TRUNCATED_REASON,
 )
@@ -160,7 +161,11 @@ def _coverage_status(dataset: UsageDataset) -> tuple[UsageLoadStatus, str | None
     if incomplete:
         for coverage in dataset.coverages:
             for limitation in coverage.limitations:
-                if limitation in {ADMIN_TRUNCATED_REASON, ADMIN_LEGACY_CACHE_REASON}:
+                if limitation in {
+                    ADMIN_CACHE_MALFORMED_REASON,
+                    ADMIN_TRUNCATED_REASON,
+                    ADMIN_LEGACY_CACHE_REASON,
+                }:
                     return UsageLoadStatus.PARTIAL, limitation
         return (
             UsageLoadStatus.PARTIAL,

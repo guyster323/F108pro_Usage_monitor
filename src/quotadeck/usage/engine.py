@@ -45,6 +45,8 @@ class UsageEngineIssue:
     provider: str
     account: str | None
     code: str
+    reason: str | None = None
+    stale: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -341,7 +343,13 @@ def collect_normalized_usage(
         load_results.append(result)
         if result.dataset is None:
             issues.append(
-                UsageEngineIssue(provider, account.account_id, result.status.value)
+                UsageEngineIssue(
+                    provider,
+                    account.account_id,
+                    result.status.value,
+                    result.reason,
+                    result.stale,
+                )
             )
             continue
         reported = (
@@ -352,7 +360,23 @@ def collect_normalized_usage(
         )
         if result.status is not UsageLoadStatus.OK:
             issues.append(
-                UsageEngineIssue(provider, account.account_id, result.status.value)
+                UsageEngineIssue(
+                    provider,
+                    account.account_id,
+                    result.status.value,
+                    result.reason,
+                    result.stale,
+                )
+            )
+        if result.stale:
+            issues.append(
+                UsageEngineIssue(
+                    provider,
+                    account.account_id,
+                    "stale",
+                    result.reason or "Serving last-known-good usage data.",
+                    True,
+                )
             )
 
     account_totals: list[NormalizedUsageRecord] = []

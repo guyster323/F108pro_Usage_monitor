@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -10,8 +10,15 @@ from quotadeck.usage.collectors import CollectorSettings
 from quotadeck.usage.engine import collect_normalized_usage
 from quotadeck.usage.fx import FxFallback, FxRateQuote
 from quotadeck.usage.grok import GrokUsageScan, grok_session_record, parse_grok_usage_payload
-from quotadeck.usage.models import UsageDataset
+from quotadeck.usage.models import (
+    TokenUsage,
+    UsageCoverage,
+    UsageDataset,
+    UsageObservation,
+    UsageSourceKind,
+)
 from quotadeck.usage.normalized import UsageConfidence
+from quotadeck.usage.service import UsageLoadResult, UsageLoadStatus
 
 
 def test_cursor_report_separates_reported_and_api_equivalent_cost(
@@ -77,6 +84,67 @@ def test_missing_usage_is_an_issue_not_a_zero_total(tmp_path: Path) -> None:
     assert report.account_totals == ()
     assert report.global_total.total_tokens is None
     assert report.issues[0].code in {"unsupported", "unavailable", "error"}
+
+
+def test_collect_normalized_usage_reports_stale_separately_from_confidence() -> None:
+    observed_at = datetime.now(timezone.utc)
+    dataset = UsageDataset(
+        observations=(
+            UsageObservation(
+                provider="cursor",
+                model="grok-4.6",
+                observed_at=observed_at,
+                tokens=TokenUsage(input_tokens=10, output_tokens=4),
+                session_id="session-1",
+                event_id="event-1",
+                source_kind=UsageSourceKind.CURSOR_ADMIN,
+            ),
+        ),
+        coverages=(
+            UsageCoverage(
+                provider="cursor",
+                source_kind=UsageSourceKind.CURSOR_ADMIN,
+                source_label="CURSOR ADMIN",
+                location_hint="test",
+                scanned_at=observed_at,
+                files_discovered=1,
+                files_read=1,
+                observations_emitted=1,
+            ),
+        ),
+    )
+
+    class StaleLoader:
+        collector = CollectorSettings()
+
+        def load(self, *_args, **_kwargs):
+            return UsageLoadResult(
+                "cursor",
+                UsageLoadStatus.OK,
+                dataset=dataset,
+                report=dataset.report(today=observed_at.date()),
+                reason="Cursor Admin API connected; no current-user token events yet.",
+                stale=True,
+            )
+
+    report = collect_normalized_usage(
+        (
+            AccountRef(
+                provider="cursor",
+                account_id="work",
+                display_name="WORK",
+                source_path="unused-state.vscdb",
+            ),
+        ),
+        loader=StaleLoader(),
+    )
+
+    assert report.records[0].confidence is UsageConfidence.EXACT
+    stale = [item for item in report.issues if item.code == "stale"]
+    assert len(stale) == 1
+    assert stale[0].account == "work"
+    assert stale[0].stale
+    assert stale[0].reason == "Cursor Admin API connected; no current-user token events yet."
 
 
 def _codex_cumulative_row(timestamp: str, *, raw_input: int, output: int) -> dict[str, object]:
