@@ -332,7 +332,7 @@ def cmd_usage_engine(args: argparse.Namespace) -> int:
 
     config = load_config()
     accounts = select_accounts(discover_accounts(), config)
-    settings = CollectorSettings.from_env()
+    settings = CollectorSettings.from_config(config)
     if args.cursor_sync:
         settings = replace(settings, enable_cursor_sync=True, enable_token_stats=True)
 

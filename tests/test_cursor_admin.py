@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import threading
 import time
@@ -7,7 +8,9 @@ import time
 from quotadeck.secrets.store import MemorySecretStore, store_cursor_admin_key
 from quotadeck.usage.collectors import CollectorName, CollectorSettings, CollectorStatus
 from quotadeck.usage.cursor_admin import (
+    ADMIN_CACHE_SAVE_FAILURE_REASON,
     ADMIN_EMPTY_REASON,
+    ADMIN_TRUNCATED_REASON,
     FILTERED_USAGE_EVENTS_URL,
     AdminGateLockError,
     CursorAdminAuthError,
@@ -91,6 +94,145 @@ def test_normalize_filters_current_user_and_dedupes() -> None:
         events[2], email="dev@company.com", user_id=None
     )
     assert event_identity(events[0]) == event_identity(events[1])
+
+
+def test_normalize_marks_only_an_additional_valid_event_after_the_limit() -> None:
+    exact_limit = normalize_admin_events(
+        [
+            _event(),
+            _event(),
+            _event(email="admin@company.com", timestamp="1750979225999"),
+            {
+                "timestamp": "1750978339901",
+                "userEmail": "dev@company.com",
+                "model": "claude-4-sonnet-thinking",
+                "isTokenBasedCall": False,
+            },
+        ],
+        account="work",
+        email="dev@company.com",
+        user_id="work",
+        max_records=1,
+    )
+    assert len(exact_limit) == 1
+    assert not exact_limit.truncated
+
+    exceeded = normalize_admin_events(
+        [
+            _event(),
+            _event(),
+            _event(email="admin@company.com", timestamp="1750979225999"),
+            {
+                "timestamp": "1750978339901",
+                "userEmail": "dev@company.com",
+                "model": "claude-4-sonnet-thinking",
+                "isTokenBasedCall": False,
+            },
+            _event(timestamp="1750979226000", conversation="conv-2"),
+        ],
+        account="work",
+        email="dev@company.com",
+        user_id="work",
+        max_records=1,
+    )
+    assert len(exceeded) == 1
+    assert exceeded.truncated
+
+
+def test_admin_limit_partial_state_survives_cache_and_service_reload(
+    tmp_path: Path,
+) -> None:
+    from quotadeck.usage.service import UsageLoadStatus, UsageService
+
+    store = MemorySecretStore()
+    store_cursor_admin_key("test-admin-key", store=store)
+    recent = str(int(time.time() * 1000))
+    settings = CollectorSettings(cursor_admin_accounts=("work",), max_records=1)
+
+    def poster(url: str, **kwargs):
+        return FakeResponse(
+            200,
+            {
+                "pagination": {"hasNextPage": False},
+                "usageEvents": [
+                    _event(timestamp=recent),
+                    _event(timestamp=str(int(recent) + 1), conversation="conv-2"),
+                ],
+            },
+        )
+
+    first = collect_cursor_admin(
+        account="work",
+        email="dev@company.com",
+        settings=settings,
+        store=store,
+        root=tmp_path,
+        poster=poster,
+        force=True,
+    )
+    assert first.usable
+    assert first.truncated
+    assert first.reason == ADMIN_TRUNCATED_REASON
+    assert first.dataset is not None
+    assert first.dataset.coverages[0].scan_truncated
+
+    cached = load_admin_cache(admin_cache_path("work", root=tmp_path), account="work")
+    assert cached is not None
+    assert cached.coverages[0].scan_truncated
+    assert ADMIN_TRUNCATED_REASON in cached.coverages[0].limitations
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("the hourly gate must serve the persisted partial cache")
+
+    reloaded = UsageService(collector=settings).load(
+        "cursor",
+        tmp_path / "state.vscdb",
+        account_id="work",
+        account_email="dev@company.com",
+        secret_store=store,
+        admin_root=tmp_path,
+        admin_poster=boom,
+    )
+    assert reloaded.status is UsageLoadStatus.PARTIAL
+    assert reloaded.available
+    assert reloaded.reason == ADMIN_TRUNCATED_REASON
+    assert reloaded.dataset is not None
+    assert reloaded.dataset.coverages[0].scan_truncated
+
+
+def test_legacy_admin_cache_is_conservatively_partial(tmp_path: Path) -> None:
+    store = MemorySecretStore()
+    store_cursor_admin_key("test-admin-key", store=store)
+    settings = CollectorSettings(cursor_admin_accounts=("work",))
+
+    def poster(url: str, **kwargs):
+        return FakeResponse(
+            200,
+            {
+                "pagination": {"hasNextPage": False},
+                "usageEvents": [_event(timestamp=str(int(time.time() * 1000)))],
+            },
+        )
+
+    collect_cursor_admin(
+        account="work",
+        email="dev@company.com",
+        settings=settings,
+        store=store,
+        root=tmp_path,
+        poster=poster,
+        force=True,
+    )
+    path = admin_cache_path("work", root=tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema"] = "quotadeck.cursor_admin.v1"
+    payload.pop("coverage", None)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    cached = load_admin_cache(path, account="work")
+    assert cached is not None
+    assert cached.coverages[0].scan_truncated
+    assert any("predates completeness metadata" in item for item in cached.coverages[0].limitations)
 
 
 def test_pagination_walks_has_next_page() -> None:
@@ -514,7 +656,7 @@ def test_empty_http_200_validates_without_fabricating_zero(tmp_path: Path) -> No
 
     assert load_cursor_admin_key(store=store) is None
     entry = admin_gate_entry("work", root=tmp_path)
-    assert float(entry.get("last_success") or 0) > 0
+    assert float(entry.get("last_success") or 0) == 0
     cached = load_admin_cache(admin_cache_path("work", root=tmp_path), account="work")
     assert cached is not None
     assert cached.observations == ()
@@ -536,6 +678,7 @@ def test_empty_http_200_validates_without_fabricating_zero(tmp_path: Path) -> No
     assert gated.status is CollectorStatus.OK
     assert gated.dataset is not None
     assert gated.dataset.observations == ()
+    assert gated.stale
     assert not gated.live_validated
     assert not admin_connection_is_fresh(gated)
     assert calls["n"] == 1
@@ -640,6 +783,43 @@ def test_auth_and_network_failures_still_fail_without_storing_key(tmp_path: Path
     assert not admin_connection_is_fresh(network)
     assert load_cursor_admin_key(store=store) is None
     assert not admin_cache_path("work", root=tmp_path).exists()
+
+
+def test_cache_save_failure_does_not_mark_data_refresh_success(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = MemorySecretStore()
+    settings = CollectorSettings(cursor_admin_accounts=("work",))
+
+    def poster(url: str, **kwargs):
+        return FakeResponse(
+            200,
+            {
+                "pagination": {"hasNextPage": False},
+                "usageEvents": [_event(timestamp=str(int(time.time() * 1000)))],
+            },
+        )
+
+    def fail_save(*_args, **_kwargs):
+        raise OSError("cache directory unavailable")
+
+    monkeypatch.setattr("quotadeck.usage.cursor_admin.save_admin_cache", fail_save)
+    attempt = collect_cursor_admin(
+        account="work",
+        email="dev@company.com",
+        settings=settings,
+        store=store,
+        root=tmp_path,
+        poster=poster,
+        api_key="inline-cache-failure-key",
+        force=True,
+    )
+    assert attempt.usable
+    assert attempt.live_validated
+    assert attempt.reason == ADMIN_CACHE_SAVE_FAILURE_REASON
+    entry = admin_gate_entry("work", root=tmp_path)
+    assert float(entry.get("last_success") or 0) == 0
 
 
 def test_valid_empty_reconnect_preserves_nonempty_cache(tmp_path: Path) -> None:
@@ -774,6 +954,52 @@ def test_valid_empty_with_prior_cache_propagates_stale(tmp_path: Path) -> None:
     assert snapshot.status == "stale"
     assert snapshot.source_label == "CURSOR ADMIN STALE"
     assert snapshot.error == ADMIN_EMPTY_REASON
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("the hourly gate should serve the persisted stale cache")
+
+    same_service = service.load(
+        "cursor",
+        tmp_path,
+        account_id="work",
+        account_email="dev@company.com",
+        secret_store=store,
+        admin_root=tmp_path,
+        admin_poster=boom,
+        force=False,
+    )
+    assert same_service.available
+    assert same_service.stale
+    assert same_service.reason == ADMIN_EMPTY_REASON
+
+    reloaded_service = UsageService(collector=settings)
+    reloaded = reloaded_service.load(
+        "cursor",
+        tmp_path,
+        account_id="work",
+        account_email="dev@company.com",
+        secret_store=store,
+        admin_root=tmp_path,
+        admin_poster=boom,
+        force=False,
+    )
+    assert reloaded.available
+    assert reloaded.stale
+    assert reloaded.reason == ADMIN_EMPTY_REASON
+
+    fresh = service.load(
+        "cursor",
+        tmp_path,
+        account_id="work",
+        account_email="dev@company.com",
+        secret_store=store,
+        admin_root=tmp_path,
+        admin_poster=ok,
+        force=True,
+    )
+    assert fresh.available
+    assert not fresh.stale
+    assert fresh.reason is None
 
 
 def test_admin_key_persists_only_after_live_validation(tmp_path: Path) -> None:

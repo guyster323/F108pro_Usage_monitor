@@ -19,7 +19,11 @@ from quotadeck.usage.collectors import (
     ValidationStatus,
     mark_dataset_partial,
 )
-from quotadeck.usage.cursor_admin import ADMIN_EMPTY_REASON
+from quotadeck.usage.cursor_admin import (
+    ADMIN_EMPTY_REASON,
+    ADMIN_LEGACY_CACHE_REASON,
+    ADMIN_TRUNCATED_REASON,
+)
 from quotadeck.usage.cursor_export import collect_cursor_usage
 from quotadeck.usage.display import CumulativeSnapshot
 from quotadeck.usage.local import scan_claude_usage, scan_codex_usage
@@ -154,6 +158,10 @@ def _coverage_status(dataset: UsageDataset) -> tuple[UsageLoadStatus, str | None
         return UsageLoadStatus.UNAVAILABLE, "No retained local usage history was found."
     incomplete = any(coverage.is_partial for coverage in dataset.coverages)
     if incomplete:
+        for coverage in dataset.coverages:
+            for limitation in coverage.limitations:
+                if limitation in {ADMIN_TRUNCATED_REASON, ADMIN_LEGACY_CACHE_REASON}:
+                    return UsageLoadStatus.PARTIAL, limitation
         return (
             UsageLoadStatus.PARTIAL,
             "Some local records could not be read; the displayed token subtotal is partial.",
@@ -535,8 +543,14 @@ class UsageService:
         if attempt.dataset is not None and attempt.status is CollectorStatus.OK:
             if not attempt.stale:
                 self.cache.put(key, attempt.dataset)
+            else:
+                # A live failure or an empty validation must not leave an
+                # earlier fresh in-memory dataset able to hide the persisted
+                # stale state on the next non-forced load.
+                self.cache.invalidate(key)
             return attempt.dataset, False, bool(attempt.stale), attempt.reason
         if attempt.dataset is not None:
+            self.cache.invalidate(key)
             return attempt.dataset, False, True, attempt.reason
         return None, False, False, attempt.reason
 
