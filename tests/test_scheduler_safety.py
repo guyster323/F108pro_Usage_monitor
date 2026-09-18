@@ -326,7 +326,7 @@ def test_stale_runtime_instances_cannot_overwrite_the_shared_daily_count(
 ) -> None:
     path = tmp_path / "flash-state.json"
     seed = FlashBudget(daily_limit=2)
-    seed.record(datetime.now(timezone.utc) - timedelta(hours=1))
+    seed.record(datetime.now(timezone.utc))
     seed.persist(path)
     config = AppConfig(daily_flash_limit=2)
     first = QuotaDeckRuntime(config, flash_state_path=path)
