@@ -32,16 +32,34 @@ from quotadeck.usage.collectors import (
     coverage_for,
     observation_from_row,
 )
-from quotadeck.usage.models import UsageDataset, UsageObservation, UsageSourceKind
+from quotadeck.usage.models import (
+    UsageCoverage,
+    UsageDataset,
+    UsageObservation,
+    UsageSourceKind,
+)
 
 log = logging.getLogger("quotadeck.usage.cursor_admin")
 
 FILTERED_USAGE_EVENTS_URL = "https://api.cursor.com/teams/filtered-usage-events"
 ADMIN_SYNC_INTERVAL_SECONDS = 3600.0
 ADMIN_GATE_LOCK_TIMEOUT_SECONDS = 5.0
-ADMIN_CACHE_SCHEMA = "quotadeck.cursor_admin.v1"
+ADMIN_CACHE_SCHEMA = "quotadeck.cursor_admin.v2"
+_ADMIN_CACHE_LEGACY_SCHEMA = "quotadeck.cursor_admin.v1"
 ADMIN_EMPTY_REASON = (
     "Cursor Admin API connected; no current-user token events yet."
+)
+ADMIN_TRUNCATED_REASON = (
+    "Cursor Admin API reached the configured record limit; the displayed token subtotal is partial."
+)
+ADMIN_CACHE_SAVE_FAILURE_REASON = (
+    "Cursor Admin API returned data, but the refreshed cache could not be saved."
+)
+ADMIN_SYNC_STATE_FAILURE_REASON = (
+    "Cursor Admin API data was saved, but refresh state could not be recorded."
+)
+ADMIN_LEGACY_CACHE_REASON = (
+    "This Cursor Admin cache predates completeness metadata; refresh is required before treating it as complete."
 )
 _MAX_PAGES = 50
 _DEFAULT_PAGE_SIZE = 1000
@@ -71,6 +89,29 @@ class CursorAdminIncompleteError(CursorAdminRequestError):
 
 class AdminGateLockError(RuntimeError):
     """The per-account Admin gate lock could not be acquired in time."""
+
+
+class AdminEventNormalization(tuple[UsageObservation, ...]):
+    """Tuple-compatible normalized events plus bounded-collection metadata.
+
+    Existing callers can continue to iterate, index, and take ``len()`` of the
+    result.  ``truncated`` is true only when another distinct, attributable,
+    token-bearing event was found after the configured observation limit.
+    """
+
+    def __new__(
+        cls,
+        observations: tuple[UsageObservation, ...],
+        *,
+        truncated: bool = False,
+    ) -> AdminEventNormalization:
+        value = super().__new__(cls, observations)
+        value.truncated = bool(truncated)
+        return value
+
+    @property
+    def observations(self) -> tuple[UsageObservation, ...]:
+        return tuple(self)
 
 
 def default_cursor_admin_dir(*, root: Path | None = None) -> Path:
@@ -262,6 +303,7 @@ def _write_admin_sync_attempt(
     root: Path | None,
     now: float,
     succeeded: bool,
+    reason: str | None = None,
 ) -> None:
     path = admin_gate_path(root=root)
     previous = _read_json(path) or {}
@@ -269,10 +311,23 @@ def _write_admin_sync_attempt(
     key = _gate_account_key(accounts, account) or account.strip() or "cursor"
     existing = accounts.get(key) if isinstance(accounts.get(key), dict) else {}
     last_success = existing.get("last_success")
-    accounts[key] = {
+    previous_reason = existing.get("last_reason")
+    last_reason = (
+        None
+        if succeeded
+        else str(reason).strip()
+        if reason is not None and str(reason).strip()
+        else previous_reason
+        if isinstance(previous_reason, str) and previous_reason.strip()
+        else None
+    )
+    entry = {
         "last_attempt": now,
         "last_success": now if succeeded else last_success,
     }
+    if last_reason:
+        entry["last_reason"] = last_reason
+    accounts[key] = entry
     _write_json(path, {"accounts": accounts})
 
 
@@ -282,6 +337,7 @@ def mark_admin_sync_attempt(
     root: Path | None = None,
     now: float | None = None,
     succeeded: bool = False,
+    reason: str | None = None,
 ) -> None:
     current = now if now is not None else _wall_clock()
     with lock_admin_gate_file(root=root):
@@ -290,7 +346,27 @@ def mark_admin_sync_attempt(
             root=root,
             now=current,
             succeeded=succeeded,
+            reason=reason,
         )
+
+
+def _record_admin_sync_failure(
+    *,
+    account: str,
+    root: Path | None,
+    now: float,
+    reason: str,
+) -> None:
+    try:
+        mark_admin_sync_attempt(
+            account=account,
+            root=root,
+            now=now,
+            succeeded=False,
+            reason=reason,
+        )
+    except (AdminGateLockError, OSError):
+        log.warning("event=cursor_admin_sync_failure_state_save_failed", exc_info=True)
 
 
 def reserve_admin_sync(
@@ -412,21 +488,22 @@ def normalize_admin_events(
     email: str | None,
     user_id: str | None,
     max_records: int,
-) -> tuple[UsageObservation, ...]:
+) -> AdminEventNormalization:
+    limit = max(0, int(max_records))
     seen: set[str] = set()
     rows: list[UsageObservation] = []
+    truncated = False
     for event in events:
         if not isinstance(event, Mapping):
             continue
         if not event_matches_current_user(event, email=email, user_id=user_id):
             continue
-        identity = event_identity(event)
-        if identity in seen:
-            continue
         mapped = _token_row(event)
         if mapped is None:
             continue
-        seen.add(identity)
+        identity = event_identity(event)
+        if identity in seen:
+            continue
         item = observation_from_row(
             mapped,
             provider="cursor",
@@ -437,10 +514,12 @@ def normalize_admin_events(
         )
         if item is None:
             continue
-        rows.append(item)
-        if len(rows) >= max_records:
+        seen.add(identity)
+        if len(rows) >= limit:
+            truncated = True
             break
-    return tuple(rows)
+        rows.append(item)
+    return AdminEventNormalization(tuple(rows), truncated=truncated)
 
 
 def save_admin_cache(
@@ -449,12 +528,25 @@ def save_admin_cache(
     account: str,
     email: str | None,
     observations: tuple[UsageObservation, ...],
+    coverage: UsageCoverage | None = None,
 ) -> None:
+    stored_coverage = coverage or coverage_for(
+        provider="cursor",
+        source_kind=UsageSourceKind.CURSOR_ADMIN,
+        source_label="CURSOR ADMIN",
+        location_hint="cursor-admin-cache",
+        observations=observations,
+        limitations=_ADMIN_LIMITATIONS,
+    )
     payload = {
         "schema": ADMIN_CACHE_SCHEMA,
         "account": account,
         "email": email or "",
         "synced_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "coverage": {
+            "scan_truncated": bool(stored_coverage.scan_truncated),
+            "limitations": list(stored_coverage.limitations),
+        },
         "observations": [
             {
                 "model": item.model,
@@ -474,7 +566,8 @@ def save_admin_cache(
 
 def load_admin_cache(path: Path, *, account: str) -> UsageDataset | None:
     payload = _read_json(path)
-    if payload is None or payload.get("schema") != ADMIN_CACHE_SCHEMA:
+    schema = str((payload or {}).get("schema") or "")
+    if payload is None or schema not in {ADMIN_CACHE_SCHEMA, _ADMIN_CACHE_LEGACY_SCHEMA}:
         return None
     cached_account = str(payload.get("account") or "").strip()
     if cached_account and cached_account.casefold() != account.casefold():
@@ -496,13 +589,35 @@ def load_admin_cache(path: Path, *, account: str) -> UsageDataset | None:
         )
         if item is not None:
             observations.append(item)
+    scan_truncated = False
+    limitations = _ADMIN_LIMITATIONS
+    if schema == _ADMIN_CACHE_LEGACY_SCHEMA:
+        # v1 did not record whether the bounded normalizer reached its limit.
+        # Keep the data usable, but never claim it was complete.
+        scan_truncated = True
+        limitations = _ADMIN_LIMITATIONS + (ADMIN_LEGACY_CACHE_REASON,)
+    else:
+        metadata = payload.get("coverage")
+        if not isinstance(metadata, Mapping) or "scan_truncated" not in metadata:
+            scan_truncated = True
+            limitations = _ADMIN_LIMITATIONS + (ADMIN_LEGACY_CACHE_REASON,)
+        else:
+            scan_truncated = bool(metadata.get("scan_truncated"))
+            raw_limitations = metadata.get("limitations")
+            if isinstance(raw_limitations, list):
+                parsed_limitations = tuple(
+                    str(item).strip() for item in raw_limitations if str(item).strip()
+                )
+                if parsed_limitations:
+                    limitations = parsed_limitations
     coverage = coverage_for(
         provider="cursor",
         source_kind=UsageSourceKind.CURSOR_ADMIN,
         source_label="CURSOR ADMIN",
         location_hint="cursor-admin-cache",
         observations=tuple(observations),
-        limitations=_ADMIN_LIMITATIONS,
+        truncated=scan_truncated,
+        limitations=limitations,
     )
     return UsageDataset(tuple(observations), (coverage,))
 
@@ -597,12 +712,19 @@ def _attempt_from_dataset(
     stale: bool = False,
     reason: str | None = None,
     live_validated: bool = False,
+    truncated: bool | None = None,
 ) -> CollectorAttempt:
+    bounded = (
+        any(item.scan_truncated for item in dataset.coverages)
+        if truncated is None
+        else bool(truncated)
+    )
     return CollectorAttempt(
         CollectorName.CURSOR_ADMIN,
         CollectorStatus.OK,
         dataset=dataset,
         reason=reason,
+        truncated=bounded,
         stale=stale,
         live_validated=live_validated,
     )
@@ -623,14 +745,22 @@ def _cached_attempt_from_gate(
         last_attempt = 0.0
         last_success = 0.0
     stale = last_success <= 0 or last_attempt > last_success + 1e-6
+    stored_reason = entry.get("last_reason")
+    cached_reason = reason or (
+        str(stored_reason).strip()
+        if isinstance(stored_reason, str) and stored_reason.strip()
+        else None
+    )
+    if cached_reason is None and stale:
+        cached_reason = (
+            ADMIN_EMPTY_REASON
+            if not dataset.observations
+            else "Serving last-known-good Cursor Admin cache."
+        )
     return _attempt_from_dataset(
         dataset,
         stale=stale,
-        reason=(
-            reason or "Serving last-known-good Cursor Admin cache."
-            if stale
-            else None
-        ),
+        reason=cached_reason,
     )
 
 
@@ -724,6 +854,12 @@ def collect_cursor_admin(
         )
     except CursorAdminAuthError as exc:
         log.info("event=cursor_admin_auth_failed")
+        _record_admin_sync_failure(
+            account=account,
+            root=root,
+            now=now,
+            reason=str(exc),
+        )
         if cached is not None:
             return _attempt_from_dataset(cached, stale=True, reason=str(exc))
         return CollectorAttempt(
@@ -733,6 +869,12 @@ def collect_cursor_admin(
         )
     except CursorAdminIncompleteError as exc:
         log.info("event=cursor_admin_pagination_incomplete")
+        _record_admin_sync_failure(
+            account=account,
+            root=root,
+            now=now,
+            reason=str(exc),
+        )
         if cached is not None:
             return _attempt_from_dataset(cached, stale=True, reason=str(exc))
         return CollectorAttempt(
@@ -742,6 +884,12 @@ def collect_cursor_admin(
         )
     except CursorAdminRequestError as exc:
         log.info("event=cursor_admin_request_failed")
+        _record_admin_sync_failure(
+            account=account,
+            root=root,
+            now=now,
+            reason=str(exc),
+        )
         if cached is not None:
             return _attempt_from_dataset(cached, stale=True, reason=str(exc))
         return CollectorAttempt(
@@ -752,15 +900,34 @@ def collect_cursor_admin(
     finally:
         key = ""
 
-    observations = normalize_admin_events(
+    normalization = normalize_admin_events(
         events,
         account=account,
         email=email,
         user_id=user_id,
         max_records=cfg.max_records,
     )
-    mark_admin_sync_attempt(account=account, root=root, now=now, succeeded=True)
+    observations = normalization.observations
+    coverage = coverage_for(
+        provider="cursor",
+        source_kind=UsageSourceKind.CURSOR_ADMIN,
+        source_label="CURSOR ADMIN",
+        location_hint="cursor-admin-api",
+        observations=observations,
+        truncated=normalization.truncated,
+        limitations=(
+            _ADMIN_LIMITATIONS
+            + ((ADMIN_TRUNCATED_REASON,) if normalization.truncated else ())
+        ),
+    )
+    dataset = UsageDataset(observations, (coverage,))
     if not observations and cached is not None and cached.observations:
+        _record_admin_sync_failure(
+            account=account,
+            root=root,
+            now=now,
+            reason=ADMIN_EMPTY_REASON,
+        )
         log.info(
             "event=cursor_admin_sync status=ok observations=0 preserved_cache=%s",
             len(cached.observations),
@@ -771,21 +938,74 @@ def collect_cursor_admin(
             reason=ADMIN_EMPTY_REASON,
             live_validated=True,
         )
-    coverage = coverage_for(
-        provider="cursor",
-        source_kind=UsageSourceKind.CURSOR_ADMIN,
-        source_label="CURSOR ADMIN",
-        location_hint="cursor-admin-api",
-        observations=observations,
-        limitations=_ADMIN_LIMITATIONS,
-    )
-    dataset = UsageDataset(observations, (coverage,))
-    save_admin_cache(cache_file, account=account, email=email, observations=observations)
+    try:
+        save_admin_cache(
+            cache_file,
+            account=account,
+            email=email,
+            observations=observations,
+            coverage=coverage,
+        )
+    except (OSError, TypeError, ValueError):
+        log.warning("event=cursor_admin_cache_save_failed", exc_info=True)
+        _record_admin_sync_failure(
+            account=account,
+            root=root,
+            now=now,
+            reason=(
+                ADMIN_CACHE_SAVE_FAILURE_REASON
+                if observations
+                else ADMIN_TRUNCATED_REASON
+                if normalization.truncated
+                else ADMIN_EMPTY_REASON
+            ),
+        )
+        return _attempt_from_dataset(
+            dataset,
+            reason=(
+                ADMIN_CACHE_SAVE_FAILURE_REASON
+                if observations
+                else ADMIN_TRUNCATED_REASON
+                if normalization.truncated
+                else ADMIN_EMPTY_REASON
+            ),
+            live_validated=True,
+            stale=True,
+            truncated=normalization.truncated,
+        )
+    if observations:
+        try:
+            mark_admin_sync_attempt(account=account, root=root, now=now, succeeded=True)
+        except (AdminGateLockError, OSError):
+            log.warning("event=cursor_admin_sync_state_save_failed", exc_info=True)
+            return _attempt_from_dataset(
+                dataset,
+                reason=ADMIN_SYNC_STATE_FAILURE_REASON,
+                live_validated=True,
+                stale=True,
+                truncated=normalization.truncated,
+            )
+    else:
+        _record_admin_sync_failure(
+            account=account,
+            root=root,
+            now=now,
+            reason=(
+                ADMIN_TRUNCATED_REASON
+                if normalization.truncated
+                else ADMIN_EMPTY_REASON
+            ),
+        )
     log.info("event=cursor_admin_sync status=ok observations=%s", len(observations))
     return _attempt_from_dataset(
         dataset,
-        reason=None if observations else ADMIN_EMPTY_REASON,
+        reason=(
+            ADMIN_TRUNCATED_REASON
+            if normalization.truncated
+            else None if observations else ADMIN_EMPTY_REASON
+        ),
         live_validated=True,
+        truncated=normalization.truncated,
     )
 
 
@@ -812,9 +1032,14 @@ def persist_admin_key_after_live_validation(
 __all__ = [
     "ADMIN_CACHE_SCHEMA",
     "ADMIN_EMPTY_REASON",
+    "ADMIN_CACHE_SAVE_FAILURE_REASON",
     "ADMIN_GATE_LOCK_TIMEOUT_SECONDS",
+    "ADMIN_LEGACY_CACHE_REASON",
     "ADMIN_SYNC_INTERVAL_SECONDS",
+    "ADMIN_SYNC_STATE_FAILURE_REASON",
+    "ADMIN_TRUNCATED_REASON",
     "FILTERED_USAGE_EVENTS_URL",
+    "AdminEventNormalization",
     "AdminGateLockError",
     "CursorAdminAuthError",
     "CursorAdminIncompleteError",
