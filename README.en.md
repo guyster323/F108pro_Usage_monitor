@@ -25,12 +25,19 @@ retained on this device**, and uploads a 240×135 RGB565 playlist to the AULA
 F108 Pro LCD. Credentials and conversation content stay with the official CLI
 or app.
 
-**v0.2.3 latest (2026-09-17):** QuotaDeck now includes period/model token aggregation,
+**v0.2.3 latest (2026-09-18):** QuotaDeck now includes period/model token aggregation,
 partial-month `AVG EST`, automatic KRW FX, and a compact settings UI. Cursor
 can import a Usage CSV without renaming it or connect an Enterprise Team Admin
 API key stored only in Windows Credential Manager. The onboarding dialog opens
 the official [Analytics dashboard](https://cursor.com/dashboard/analytics) and
 [Admin API guide](https://cursor.com/docs/account/teams/admin-api).
+
+Cursor Admin collection now marks additional valid events beyond the 20,000-record
+limit as `PARTIAL` and persists completeness metadata in its cache. Empty HTTP 200
+responses, stale caches, and cache-write failures remain distinct from a successful
+data refresh. `usage-engine --json` uses the GUI's saved Cursor bindings and exposes
+Admin stale reasons. See the [2026-09-18 improvement record](docs/IMPROVEMENT_2026-09-18.md)
+for the verification scope.
 
 Current Codex `token_usage_record` files are grouped by `thread_id`, so sibling
 threads sharing one parent session are neither mislabeled as damaged nor
@@ -74,7 +81,7 @@ bytes when the pixels are unchanged. Independent checks passed for
 The `pyproject.toml` test path includes both `src` and the repository root, so
 both `pytest` and `python -m pytest` collect the regression tests under `tools`.
 
-The latest local integrated run on 2026-09-17 finished with **524 passed,
+The latest local integrated run on 2026-09-18 finished with **534 passed,
 1 skipped, and 8 subtests passed**. Documentation, sprite, frame-budget, and
 packaged-render checks also passed. The one skip is an existing test that
 requires permission to create a Windows directory symlink. The previous
@@ -82,6 +89,13 @@ Windows [CI run](https://github.com/guyster323/F108pro_Usage_monitor/actions/run
 remains available for reference.
 
 ## Changelog
+
+### 2026-09-18
+- Stored Cursor Admin completeness metadata in cache v2 and conservatively marked extra events, malformed pages, and damaged caches as partial or stale.
+- Kept empty HTTP 200 validation separate from data-refresh success; only a successfully saved new dataset advances the success timestamp, while gate and cache-write failures preserve last-known-good data.
+- Exposed Admin stale status and reasons in `usage-engine --json` and text output, and unified the CLI with GUI-saved `cursor_bindings`.
+- Recorded the regression scope and the unverified live API and hardware boundaries in the [improvement record](docs/IMPROVEMENT_2026-09-18.md). This update changes source, docs, and tests; it does not rebuild the executable.
+- Local integrated validation including the independent review follow-up: **534 passed, 1 skipped, 8 subtests passed**.
 
 ### 2026-09-17
 - Encoded F108 payload delays with this device's observed 2 ms unit (`delay_byte = logical_ms / 2`). The older `/20` packing played about 1 s; `/4` played about 2.5 s.

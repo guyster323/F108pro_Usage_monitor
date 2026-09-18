@@ -369,7 +369,13 @@ def cmd_usage_engine(args: argparse.Namespace) -> int:
                 "reason": fx.reason,
             },
             "issues": [
-                {"provider": row.provider, "account": row.account, "code": row.code}
+                {
+                    "provider": row.provider,
+                    "account": row.account,
+                    "code": row.code,
+                    "reason": row.reason,
+                    "stale": row.stale,
+                }
                 for row in report.issues
             ],
         }
@@ -397,6 +403,7 @@ def cmd_usage_engine(args: argparse.Namespace) -> int:
     if report.issues:
         print("Issues: " + ", ".join(
             f"{item.provider}/{item.account or '-'}:{item.code}"
+            + (f" ({item.reason})" if item.reason else "")
             for item in report.issues
         ))
     return 0

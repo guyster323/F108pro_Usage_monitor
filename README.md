@@ -19,7 +19,7 @@
 ---
 # QuotaDeck
 
-## v0.2.3 최신 변경 요약 (2026-09-17)
+## v0.2.3 최신 변경 요약 (2026-09-18)
 
 누적 Usage collector와 기간·모델별 토큰 집계, 부분 월 기반 `AVG EST`,
 KRW 자동 환율, 컴팩트 설정 UI를 제공합니다. Cursor는 설정의 소스 메뉴에서
@@ -27,6 +27,12 @@ Usage CSV를 파일명 변경 없이 가져오거나, Enterprise Team Admin API�
 자격 증명 관리자에 안전하게 연결할 수 있습니다. 연결 전 팝업에서 공식
 [Analytics 대시보드](https://cursor.com/dashboard/analytics)와
 [Admin API 안내](https://cursor.com/docs/account/teams/admin-api)를 바로 엽니다.
+
+Cursor Admin 수집은 20,000건 상한 뒤의 추가 유효 이벤트를 `PARTIAL`로
+표시하고 completeness 정보를 캐시에 저장합니다. 빈 HTTP 200 응답·stale
+캐시·캐시 저장 실패는 데이터 갱신 성공과 구분하며, `usage-engine --json`은
+GUI에 저장된 Cursor 연결과 stale 사유를 함께 보여 줍니다. 자세한 검증 결과는
+[2026-09-18 개선 기록](docs/IMPROVEMENT_2026-09-18.md)에 있습니다.
 
 Codex 최신 `token_usage_record`의 `thread_id`를 독립 스트림으로 처리해 같은
 parent session을 공유하는 sibling thread가 손상 기록으로 오인되거나 누락되지
@@ -59,7 +65,7 @@ Windows 기본 auto/Win32 전송은 `GET_FEATURE`가 65바이트 또는 64바이
 
 스프라이트 컴파일러는 Pillow `QuantOctree.c`를 바탕으로 한 고정 순서 알고리즘을 사용하며, 출처와 라이선스는 [LICENSE](LICENSE)에 기록했습니다. 문서 미리보기 내보내기는 픽셀이 같을 때 기존 PNG 바이트를 유지합니다. `python tools/gen_sprites.py --check`(기본 환경과 `PYTHONHASHSEED=1`), `tools/verify_refresh.py`, 문서 내보내기를 독립적으로 통과했습니다. `pyproject.toml`의 테스트 경로에 `src`와 저장소 루트를 함께 지정해 `pytest`와 `python -m pytest` 모두 `tools` 회귀 테스트를 수집합니다.
 
-2026-09-17 최신 로컬 통합 검증은 **524 passed, 1 skipped, 8 subtests
+2026-09-18 최신 로컬 통합 검증은 **534 passed, 1 skipped, 8 subtests
 passed**였고, 문서·스프라이트·frame budget 검사와 PyInstaller 패키지 렌더
 스모크 테스트도 통과했습니다. 건너뛴 테스트는 Windows 디렉터리 심볼릭 링크
 권한이 필요한 기존 테스트입니다. 이전 Windows CI 기록은
@@ -72,6 +78,13 @@ passed**였고, 문서·스프라이트·frame budget 검사와 PyInstaller 패�
 자세한 변경 사항은 [v0.2.3 변경 노트](CHANGE_NOTE_v0.2.3_KO.md)를 참고하세요.
 
 ## Changelog
+
+### 2026-09-18
+- Cursor Admin 캐시 v2에 completeness를 저장하고, 상한 뒤의 추가 유효 이벤트·손상 캐시·비정상 페이지를 `PARTIAL` 또는 stale로 보수적으로 표시합니다.
+- 빈 HTTP 200 응답은 연결 검증으로만 기록하고, 새 데이터의 캐시 저장이 성공한 경우에만 데이터 갱신 성공 시각을 갱신합니다. 게이트 오류와 캐시 저장 실패에서도 last-known-good을 보존합니다.
+- `usage-engine --json`과 텍스트 출력에 Admin stale 상태와 사유를 표시하고, GUI의 `cursor_bindings`를 사용하도록 수집기 설정을 통일했습니다.
+- 한·영 README와 [개선 기록](docs/IMPROVEMENT_2026-09-18.md)에 회귀 검증 범위와 실제 API·하드웨어 미검증 범위를 기록했습니다. 이번 변경은 소스·문서·테스트 변경이며 실행 파일 재빌드는 포함하지 않습니다.
+- 독립 리뷰 후속 회귀를 포함한 로컬 통합 검증: **534 passed, 1 skipped, 8 subtests passed**.
 
 ### 2026-09-17
 - F108 payload delay를 이 장치 관측 기준 2ms 단위(`delay_byte = logical_ms / 2`)로 보정했습니다. 이전 `/20`은 약 1초, `/4`는 약 2.5초로 재생됐습니다.

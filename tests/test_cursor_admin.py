@@ -8,8 +8,10 @@ import time
 from quotadeck.secrets.store import MemorySecretStore, store_cursor_admin_key
 from quotadeck.usage.collectors import CollectorName, CollectorSettings, CollectorStatus
 from quotadeck.usage.cursor_admin import (
+    ADMIN_CACHE_MALFORMED_REASON,
     ADMIN_CACHE_SAVE_FAILURE_REASON,
     ADMIN_EMPTY_REASON,
+    ADMIN_GATE_FAILURE_REASON,
     ADMIN_TRUNCATED_REASON,
     FILTERED_USAGE_EVENTS_URL,
     AdminGateLockError,
@@ -235,6 +237,44 @@ def test_legacy_admin_cache_is_conservatively_partial(tmp_path: Path) -> None:
     assert any("predates completeness metadata" in item for item in cached.coverages[0].limitations)
 
 
+def test_malformed_v2_admin_cache_is_partial(tmp_path: Path) -> None:
+    store = MemorySecretStore()
+    store_cursor_admin_key("test-admin-key", store=store)
+    settings = CollectorSettings(cursor_admin_accounts=("work",))
+
+    def poster(url: str, **kwargs):
+        return FakeResponse(
+            200,
+            {
+                "pagination": {"hasNextPage": False},
+                "usageEvents": [_event(timestamp=str(int(time.time() * 1000)))],
+            },
+        )
+
+    collect_cursor_admin(
+        account="work",
+        email="dev@company.com",
+        settings=settings,
+        store=store,
+        root=tmp_path,
+        poster=poster,
+        force=True,
+    )
+    path = admin_cache_path("work", root=tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["coverage"]["scan_truncated"] = None
+    payload["observations"].append({"model": "broken", "observed_at": "not-a-date"})
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    cached = load_admin_cache(path, account="work")
+    assert cached is not None
+    coverage = cached.coverages[0]
+    assert coverage.scan_truncated
+    assert coverage.malformed_usage_events == 1
+    assert ADMIN_CACHE_MALFORMED_REASON in coverage.limitations
+    assert any("predates completeness metadata" in item for item in coverage.limitations)
+
+
 def test_pagination_walks_has_next_page() -> None:
     pages = [
         FakeResponse(
@@ -271,6 +311,67 @@ def test_pagination_walks_has_next_page() -> None:
     assert len(events) == 2
     assert [item["page"] for item in calls] == [1, 2]
     assert all(item["pageSize"] == 1000 for item in calls)
+
+
+def test_malformed_followup_page_preserves_last_known_good(tmp_path: Path) -> None:
+    store = MemorySecretStore()
+    store_cursor_admin_key("test-admin-key", store=store)
+    settings = CollectorSettings(cursor_admin_accounts=("work",))
+
+    def ok(url: str, **kwargs):
+        return FakeResponse(
+            200,
+            {
+                "pagination": {"hasNextPage": False},
+                "usageEvents": [_event()],
+            },
+        )
+
+    first = collect_cursor_admin(
+        account="work",
+        email="dev@company.com",
+        settings=settings,
+        store=store,
+        root=tmp_path,
+        poster=ok,
+        force=True,
+    )
+    assert first.usable
+    before = admin_gate_entry("work", root=tmp_path)
+
+    calls = {"n": 0}
+
+    def malformed_followup(url: str, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResponse(
+                200,
+                {
+                    "pagination": {"hasNextPage": True},
+                    "usageEvents": [_event(timestamp="2")],
+                },
+            )
+        return FakeResponse(200, {})
+
+    stale = collect_cursor_admin(
+        account="work",
+        email="dev@company.com",
+        settings=settings,
+        store=store,
+        root=tmp_path,
+        poster=malformed_followup,
+        force=True,
+    )
+    assert stale.usable
+    assert stale.stale
+    assert stale.reason == "Cursor Admin API returned an invalid usageEvents page."
+    assert stale.dataset is not None
+    assert stale.dataset.observations[0].tokens.input_tokens == 10
+    after = admin_gate_entry("work", root=tmp_path)
+    assert after.get("last_success") == before.get("last_success")
+    cached = load_admin_cache(admin_cache_path("work", root=tmp_path), account="work")
+    assert cached is not None
+    assert cached.observations[0].tokens.input_tokens == 10
 
 
 def test_auth_failure_does_not_include_key() -> None:
@@ -783,6 +884,58 @@ def test_auth_and_network_failures_still_fail_without_storing_key(tmp_path: Path
     assert not admin_connection_is_fresh(network)
     assert load_cursor_admin_key(store=store) is None
     assert not admin_cache_path("work", root=tmp_path).exists()
+
+
+def test_gate_write_failure_serves_last_known_good_cache(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = MemorySecretStore()
+    store_cursor_admin_key("test-admin-key", store=store)
+    settings = CollectorSettings(cursor_admin_accounts=("work",))
+
+    def ok(url: str, **kwargs):
+        return FakeResponse(
+            200,
+            {
+                "pagination": {"hasNextPage": False},
+                "usageEvents": [_event()],
+            },
+        )
+
+    first = collect_cursor_admin(
+        account="work",
+        email="dev@company.com",
+        settings=settings,
+        store=store,
+        root=tmp_path,
+        poster=ok,
+        force=True,
+    )
+    assert first.usable
+
+    def fail_reservation(**_kwargs):
+        raise OSError("gate directory unavailable")
+
+    def unexpected_network(*_args, **_kwargs):
+        raise AssertionError("the API must not run when gate reservation fails")
+
+    monkeypatch.setattr(
+        "quotadeck.usage.cursor_admin.reserve_admin_sync",
+        fail_reservation,
+    )
+    attempt = collect_cursor_admin(
+        account="work",
+        email="dev@company.com",
+        settings=settings,
+        store=store,
+        root=tmp_path,
+        poster=unexpected_network,
+        force=True,
+    )
+    assert attempt.usable
+    assert attempt.stale
+    assert attempt.reason == ADMIN_GATE_FAILURE_REASON
 
 
 def test_cache_save_failure_does_not_mark_data_refresh_success(

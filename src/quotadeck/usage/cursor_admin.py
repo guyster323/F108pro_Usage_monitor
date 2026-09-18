@@ -55,6 +55,12 @@ ADMIN_TRUNCATED_REASON = (
 ADMIN_CACHE_SAVE_FAILURE_REASON = (
     "Cursor Admin API returned data, but the refreshed cache could not be saved."
 )
+ADMIN_CACHE_MALFORMED_REASON = (
+    "Cursor Admin cache contains invalid observation rows; the displayed token subtotal is partial."
+)
+ADMIN_GATE_FAILURE_REASON = (
+    "Cursor Admin sync state could not be updated; the last-known-good cache is shown."
+)
 ADMIN_SYNC_STATE_FAILURE_REASON = (
     "Cursor Admin API data was saved, but refresh state could not be recorded."
 )
@@ -576,19 +582,26 @@ def load_admin_cache(path: Path, *, account: str) -> UsageDataset | None:
     raw_rows = payload.get("observations")
     if not isinstance(raw_rows, list):
         return None
+    malformed = 0
     for index, raw in enumerate(raw_rows):
         if not isinstance(raw, Mapping):
+            malformed += 1
             continue
-        item = observation_from_row(
-            raw,
-            provider="cursor",
-            source_kind=UsageSourceKind.CURSOR_ADMIN,
-            default_model="cursor",
-            account=account,
-            index=index,
-        )
+        try:
+            item = observation_from_row(
+                raw,
+                provider="cursor",
+                source_kind=UsageSourceKind.CURSOR_ADMIN,
+                default_model="cursor",
+                account=account,
+                index=index,
+            )
+        except (TypeError, ValueError, OverflowError):
+            item = None
         if item is not None:
             observations.append(item)
+        else:
+            malformed += 1
     scan_truncated = False
     limitations = _ADMIN_LIMITATIONS
     if schema == _ADMIN_CACHE_LEGACY_SCHEMA:
@@ -602,20 +615,44 @@ def load_admin_cache(path: Path, *, account: str) -> UsageDataset | None:
             scan_truncated = True
             limitations = _ADMIN_LIMITATIONS + (ADMIN_LEGACY_CACHE_REASON,)
         else:
-            scan_truncated = bool(metadata.get("scan_truncated"))
-            raw_limitations = metadata.get("limitations")
-            if isinstance(raw_limitations, list):
+            raw_truncated = metadata.get("scan_truncated")
+            if isinstance(raw_truncated, bool):
+                scan_truncated = raw_truncated
+            else:
+                scan_truncated = True
+                limitations = _ADMIN_LIMITATIONS + (ADMIN_LEGACY_CACHE_REASON,)
+            if "limitations" not in metadata:
+                raw_limitations = None
+            else:
+                raw_limitations = metadata.get("limitations")
+            if raw_limitations is None and "limitations" in metadata:
+                scan_truncated = True
+                if ADMIN_LEGACY_CACHE_REASON not in limitations:
+                    limitations += (ADMIN_LEGACY_CACHE_REASON,)
+            elif isinstance(raw_limitations, list):
                 parsed_limitations = tuple(
                     str(item).strip() for item in raw_limitations if str(item).strip()
                 )
                 if parsed_limitations:
                     limitations = parsed_limitations
+            elif "limitations" in metadata:
+                scan_truncated = True
+                if ADMIN_LEGACY_CACHE_REASON not in limitations:
+                    limitations += (ADMIN_LEGACY_CACHE_REASON,)
+            if not isinstance(raw_truncated, bool):
+                scan_truncated = True
+                if ADMIN_LEGACY_CACHE_REASON not in limitations:
+                    limitations += (ADMIN_LEGACY_CACHE_REASON,)
+    if malformed:
+        if ADMIN_CACHE_MALFORMED_REASON not in limitations:
+            limitations += (ADMIN_CACHE_MALFORMED_REASON,)
     coverage = coverage_for(
         provider="cursor",
         source_kind=UsageSourceKind.CURSOR_ADMIN,
         source_label="CURSOR ADMIN",
         location_hint="cursor-admin-cache",
         observations=tuple(observations),
+        malformed=malformed,
         truncated=scan_truncated,
         limitations=limitations,
     )
@@ -691,10 +728,24 @@ def fetch_filtered_usage_events(
         if not isinstance(payload, Mapping):
             raise CursorAdminRequestError("Cursor Admin API returned an unexpected payload.")
         page_events = payload.get("usageEvents")
-        if isinstance(page_events, list):
-            events.extend(item for item in page_events if isinstance(item, Mapping))
+        if not isinstance(page_events, list) or not all(
+            isinstance(item, Mapping) for item in page_events
+        ):
+            raise CursorAdminRequestError(
+                "Cursor Admin API returned an invalid usageEvents page."
+            )
         pagination = payload.get("pagination")
-        has_next = isinstance(pagination, Mapping) and bool(pagination.get("hasNextPage"))
+        if not isinstance(pagination, Mapping):
+            raise CursorAdminRequestError(
+                "Cursor Admin API returned an invalid pagination page."
+            )
+        raw_has_next = pagination.get("hasNextPage")
+        if not isinstance(raw_has_next, bool):
+            raise CursorAdminRequestError(
+                "Cursor Admin API returned an invalid pagination flag."
+            )
+        events.extend(page_events)
+        has_next = raw_has_next
         log.info("event=cursor_admin_page page=%s events=%s next=%s", page, len(events), has_next)
         if not has_next:
             break
@@ -790,6 +841,18 @@ def collect_cursor_admin(
             now=now,
             force=force,
             ready=bool(key) and attributed,
+        )
+    except OSError:
+        if cached is not None:
+            return _attempt_from_dataset(
+                cached,
+                reason=ADMIN_GATE_FAILURE_REASON,
+                stale=True,
+            )
+        return CollectorAttempt(
+            CollectorName.CURSOR_ADMIN,
+            CollectorStatus.MISSING,
+            reason=ADMIN_GATE_FAILURE_REASON,
         )
     except AdminGateLockError as exc:
         if cached is not None:
@@ -1032,8 +1095,10 @@ def persist_admin_key_after_live_validation(
 __all__ = [
     "ADMIN_CACHE_SCHEMA",
     "ADMIN_EMPTY_REASON",
+    "ADMIN_CACHE_MALFORMED_REASON",
     "ADMIN_CACHE_SAVE_FAILURE_REASON",
     "ADMIN_GATE_LOCK_TIMEOUT_SECONDS",
+    "ADMIN_GATE_FAILURE_REASON",
     "ADMIN_LEGACY_CACHE_REASON",
     "ADMIN_SYNC_INTERVAL_SECONDS",
     "ADMIN_SYNC_STATE_FAILURE_REASON",

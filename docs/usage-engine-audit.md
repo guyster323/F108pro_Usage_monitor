@@ -140,6 +140,9 @@ API spend; `estimate_api_equivalent_cost` is independent of subscription/API
 billing mode and KRW conversion carries FX provenance and fallback metadata.
 The machine-readable contract is available through `quotadeck usage-engine
 --json`.
+The JSON and text outputs keep freshness separate from completeness: a retained
+Admin dataset can remain `confidence=exact` while a separate `stale` issue carries
+the account and refresh reason.
 
 Focused usage/pricing/FX tests pass (108 tests); the full suite passes 416 tests
 with one pre-existing skip. Live authenticated Cursor token-stats and Grok CLI
